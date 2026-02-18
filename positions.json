@@ -1,0 +1,40 @@
+{
+  "positions": {
+    "TESTCOIN:1D": {
+      "symbol": "TESTCOIN",
+      "timeframe": "1d",
+      "direction": "LONG",
+      "entry": 100.0,
+      "sl": 90.0,
+      "tp1": 110.0,
+      "tp2": 120.0,
+      "tp3": 130.0,
+      "status": "CLOSED",
+      "tp1_hit": true,
+      "tp2_hit": true,
+      "tp3_hit": true,
+      "sl_hit": false,
+      "opened_at": "2026-02-18T08:47:01.598658Z",
+      "closed_at": "2026-02-18T08:49:28.113095Z",
+      "closed_reason": "TP3"
+    },
+    "SLTEST:1D": {
+      "symbol": "SLTEST",
+      "timeframe": "1d",
+      "direction": "LONG",
+      "entry": 100.0,
+      "sl": 90.0,
+      "tp1": 110.0,
+      "tp2": 120.0,
+      "tp3": 130.0,
+      "status": "CLOSED",
+      "tp1_hit": false,
+      "tp2_hit": false,
+      "tp3_hit": false,
+      "sl_hit": true,
+      "opened_at": "2026-02-18T09:32:12.821827Z",
+      "closed_at": "2026-02-18T09:32:12.822516Z",
+      "closed_reason": "SL"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+python-dotenv
+requests
+pandas
+pytest
+python-3.12.8
+worker: PYTHONPATH=. python -m app.main

@@ -1,0 +1,57 @@
+def fib_retracement(start: float, end: float, current: float):
+    """
+    Calculate retracement ratio between start and end
+    """
+
+    move = end - start
+
+    if move == 0:
+        return None
+
+    retrace = (current - end) / move
+
+    return abs(retrace)
+
+
+def fib_extension(a: float, b: float, c: float):
+    """
+    Calculate Fibonacci extension targets
+    Wave A = a -> b
+    Wave B = retrace to c
+    """
+
+    length = b - a
+
+    targets = {
+        "1.0": c + length,
+        "1.618": c + (length * 1.618),
+        "2.0": c + (length * 2.0),
+    }
+
+    return targets
+
+
+def fib_zone_match(value: float):
+    """
+    Check which common fib zone the value fits
+    """
+
+    zones = {
+        "0.236": 0.236,
+        "0.382": 0.382,
+        "0.5": 0.5,
+        "0.618": 0.618,
+        "0.786": 0.786,
+        "1.0": 1.0,
+        "1.618": 1.618,
+    }
+
+    tolerance = 0.03  # 3%
+
+    matches = []
+
+    for name, level in zones.items():
+        if abs(value - level) <= tolerance:
+            matches.append(name)
+
+    return matches
