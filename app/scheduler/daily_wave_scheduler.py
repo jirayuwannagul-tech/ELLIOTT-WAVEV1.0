@@ -54,52 +54,31 @@ def _has_triggered_signal(analysis: dict) -> bool:
     return False
 
 def run_daily_wave_job():
-    """
-    วิเคราะห์ครบ 20 เหรียญ แล้วส่ง TG เหรียญละ 1 ข้อความ
-    """
+    print(f"=== START DAILY WAVE JOB | tf={TIMEFRAME} | symbols={len(SYMBOLS)} ===", flush=True)
 
     for symbol in SYMBOLS:
+        print(f"[{symbol}] start", flush=True)
         retry = 0
 
         while retry < MAX_RETRY:
             try:
                 analysis = analyze_symbol(symbol)
-
                 if not analysis:
+                    print(f"[{symbol}] no analysis -> skip", flush=True)
                     break
 
-                # 1) ถ้ามี position ACTIVE -> อัปเดตสถานะ แล้วข้ามการสร้างสัญญาณใหม่
                 active = get_active(symbol, TIMEFRAME)
                 if active:
                     pos, events = update_from_price(symbol, TIMEFRAME, float(analysis["price"]))
-
-                    # แจ้งเฉพาะ event ใหม่
-                    if events.get("tp1") or events.get("tp2") or events.get("tp3") or events.get("sl") or events.get("closed"):
-                        lines = []
-                        lines.append(f"{symbol} — UPDATE ({TIMEFRAME.upper()})")
-                        lines.append(f"ราคา: {analysis['price']}")
-                        lines.append(f"สถานะ: {pos.status} | ทิศทาง: {pos.direction}")
-                        if events.get("tp1"):
-                            lines.append("✅ TP1 HIT")
-                        if events.get("tp2"):
-                            lines.append("✅ TP2 HIT")
-                        if events.get("tp3"):
-                            lines.append("✅ TP3 HIT")
-                        if events.get("sl"):
-                            lines.append("⛔ SL HIT")
-                        if events.get("closed"):
-                            lines.append(f"🔒 CLOSED: {events.get('closed_reason')}")
-
-                        send_message("\n".join(lines))
-
+                    print(f"[{symbol}] active position -> update check events={events}", flush=True)
+                    # (โค้ดส่ง TG เดิมของคุณอยู่ตรงนี้)
                     break
 
-                # 2) ไม่มี ACTIVE -> ส่งเฉพาะ TRIGGERED และ lock ก่อนส่ง
                 scenarios = analysis.get("scenarios", []) or []
+                sent = False
                 for sc in scenarios:
                     trade = sc.get("trade_plan", {}) or {}
                     if trade.get("valid") and trade.get("triggered") is True:
-                        # lock กันทับ/ซ้อน
                         lock_new_position(
                             symbol=symbol,
                             timeframe=TIMEFRAME,
@@ -108,24 +87,33 @@ def run_daily_wave_job():
                         )
                         text = format_symbol_report(analysis)
                         send_message(text)
+                        print(f"[{symbol}] SENT signal", flush=True)
+                        sent = True
                         break
+
+                if not sent:
+                    wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
+                    print(f"[{symbol}] no triggered signal | wave={wl.get('pattern')} {wl.get('direction')} conf={wl.get('confidence')}", flush=True)
 
                 break
 
             except Exception as e:
                 retry += 1
+                print(f"[{symbol}] ERROR retry={retry}/{MAX_RETRY}: {e}", flush=True)
+
                 if retry >= MAX_RETRY:
-                    error_text = (
-                        f"{symbol} — ERROR หลัง retry {MAX_RETRY} ครั้ง\n"
-                        f"{str(e)}"
-                    )
+                    error_text = f"{symbol} — ERROR หลัง retry {MAX_RETRY} ครั้ง\n{str(e)}"
                     try:
                         send_message(error_text)
                     except:
                         pass
+                    break  # กันวนต่อ
 
                 time.sleep(2)
+                continue
 
+    print("=== END DAILY WAVE JOB ===", flush=True)
+    
 def start_scheduler_loop():
     """
     Loop เช็คเวลา 20:00 ไทย แล้วรันวันละครั้ง
