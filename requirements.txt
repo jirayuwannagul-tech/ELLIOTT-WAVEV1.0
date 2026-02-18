@@ -2,5 +2,5 @@ python-dotenv
 requests
 pandas
 pytest
-python-3.12.8
+
 
