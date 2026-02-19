@@ -14,7 +14,8 @@ from app.state.position_manager import get_active, lock_new_position, update_fro
 from app.config.wave_settings import TIMEFRAME
 from app.services.telegram_reporter import format_symbol_report, send_message
 
-MIN_CONFIDENCE = 60
+MIN_CONF_REPORT = 60   # ส่งรายงานเฉพาะเหรียญที่ conf >= 60
+MIN_CONF_SIGNAL = 70   # ส่งสัญญาณ/ล็อคโพสิชัน เฉพาะ conf >= 70
 
 def _has_triggered_signal(analysis: dict) -> bool:
     scenarios = analysis.get("scenarios", []) or []
@@ -23,25 +24,21 @@ def _has_triggered_signal(analysis: dict) -> bool:
         trade = sc.get("trade_plan", {}) or {}
         conf = float(sc.get("confidence") or 0)
 
-        # 1) ต้อง confidence ผ่านเกณฑ์
-        if conf < MIN_CONFIDENCE:
+        if conf < MIN_CONF_SIGNAL:
             continue
 
-        # 2) ต้อง valid + triggered
         if not trade.get("valid"):
             continue
 
         if trade.get("triggered") is not True:
             continue
 
-        # 3) RR ต้อง >= 2 (กันไม้ขยะ)
         entry = float(trade.get("entry") or 0)
         sl = float(trade.get("sl") or 0)
         tp3 = float(trade.get("tp3") or 0)
 
         risk = abs(entry - sl)
         reward = abs(tp3 - entry)
-
         if risk <= 0:
             continue
 
@@ -56,6 +53,10 @@ def _has_triggered_signal(analysis: dict) -> bool:
 def run_daily_wave_job():
     print(f"=== START DAILY WAVE JOB | tf={TIMEFRAME} | symbols={len(SYMBOLS)} ===", flush=True)
 
+    found = 0
+    found_symbols = []
+    errors = 0
+
     for symbol in SYMBOLS:
         print(f"[{symbol}] start", flush=True)
         retry = 0
@@ -69,15 +70,20 @@ def run_daily_wave_job():
 
                 active = get_active(symbol, TIMEFRAME)
                 if active:
+                    # ✅ ACTIVE: ส่งอัปเดตทุกวัน (ตามที่คุย)
                     pos, events = update_from_price(symbol, TIMEFRAME, float(analysis["price"]))
-                    print(f"[{symbol}] active position -> update check events={events}", flush=True)
-                    # (โค้ดส่ง TG เดิมของคุณอยู่ตรงนี้)
+                    # ... (บล็อค update ที่คุณทำไว้)
                     break
 
                 scenarios = analysis.get("scenarios", []) or []
                 sent = False
+
                 for sc in scenarios:
                     trade = sc.get("trade_plan", {}) or {}
+                    conf = float(sc.get("confidence") or 0)
+                    if conf < MIN_CONF_SIGNAL:
+                        continue
+
                     if trade.get("valid") and trade.get("triggered") is True:
                         lock_new_position(
                             symbol=symbol,
@@ -86,8 +92,11 @@ def run_daily_wave_job():
                             trade_plan=trade,
                         )
                         text = format_symbol_report(analysis)
-                        send_message(text)
+                        send_message(text)  # ไปห้องเดียวกันผ่าน TELEGRAM_CHAT_ID
                         print(f"[{symbol}] SENT signal", flush=True)
+
+                        found += 1
+                        found_symbols.append(symbol)
                         sent = True
                         break
 
@@ -100,17 +109,23 @@ def run_daily_wave_job():
             except Exception as e:
                 retry += 1
                 print(f"[{symbol}] ERROR retry={retry}/{MAX_RETRY}: {e}", flush=True)
-
                 if retry >= MAX_RETRY:
-                    error_text = f"{symbol} — ERROR หลัง retry {MAX_RETRY} ครั้ง\n{str(e)}"
-                    try:
-                        send_message(error_text)
-                    except:
-                        pass
-                    break  # กันวนต่อ
-
+                    errors += 1
+                    break
                 time.sleep(2)
-                continue
+
+    # ✅ สรุปเช้า: เจอ/ไม่เจอ
+    summary = []
+    summary.append(f"🕖 DAILY SUMMARY ({TIMEFRAME.upper()})")
+    summary.append(f"สแกน: {len(SYMBOLS)} เหรียญ")
+    summary.append(f"พบสัญญาณ: {found} เหรียญ")
+    summary.append(f"ไม่พบสัญญาณ: {len(SYMBOLS) - found} เหรียญ")
+    if found_symbols:
+        summary.append("รายการที่พบ: " + ", ".join(found_symbols))
+    if errors:
+        summary.append(f"⚠️ errors: {errors}")
+
+    send_message("\n".join(summary))
 
     print("=== END DAILY WAVE JOB ===", flush=True)
     
