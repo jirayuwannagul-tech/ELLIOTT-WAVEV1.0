@@ -129,10 +129,14 @@ def build_trade_plan(
             l1 = float(pivots[1]["price"])
             h2 = float(pivots[2]["price"])
             a_len = abs(h0 - l1)
-            entry = l1
+            if current_price >= h2:
+                trade["reason"] = "ABC_DOWN: ราคาเหนือ SL แล้ว (invalid)"
+                return trade
+
+            entry = float(current_price)
             sl = h2
 
-            fib = _safe_fib_extension(h0, l1, h2, "SHORT", a_len)
+            fib = _safe_fib_extension(h0, l1, entry, "SHORT", a_len)
             tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
             if sr:
@@ -145,10 +149,14 @@ def build_trade_plan(
             h1 = float(pivots[1]["price"])
             l2 = float(pivots[2]["price"])
             a_len = abs(h1 - l0)
-            entry = h1
+            if current_price <= l2:
+                trade["reason"] = "ABC_UP: ราคาต่ำกว่า SL แล้ว (invalid)"
+                return trade
+
+            entry = float(current_price)
             sl = l2
 
-            fib = _safe_fib_extension(l0, h1, l2, "LONG", a_len)
+            fib = _safe_fib_extension(l0, h1, entry, "LONG", a_len)
             tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
             if sr:

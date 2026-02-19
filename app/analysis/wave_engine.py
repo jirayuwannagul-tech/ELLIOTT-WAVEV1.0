@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional
+import logging
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 
@@ -9,7 +11,7 @@ from app.analysis.pivot import find_fractal_pivots, filter_pivots
 from app.analysis.wave_scenarios import build_scenarios
 from app.risk.risk_manager import build_trade_plan
 
-from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR
+from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR, MIN_CONFIDENCE_LIVE
 
 from app.indicators.ema import add_ema
 from app.indicators.rsi import add_rsi
@@ -64,6 +66,8 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
 
     price = _safe_float(base.get("price"), 0.0)
     rsi14 = _safe_float(base.get("rsi14"), 50.0)
+    weekly_permit_long = bool(base.get("weekly_permit_long", True))
+    weekly_permit_short = bool(base.get("weekly_permit_short", True))
 
     lv = _range_levels(df, lookback=60)
     range_low = lv.get("range_low")
@@ -92,7 +96,7 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
     scenarios: List[Dict] = []
 
     # LONG near support + RSI low
-    if near_support and rsi14 <= 45:
+    if near_support and rsi14 <= 45 and weekly_permit_long:
         sc = {
             "type": "SIDEWAY_RANGE",
             "phase": "MEAN_REVERT",
@@ -114,7 +118,7 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
         scenarios.append(sc)
 
     # SHORT near resist + RSI high
-    if near_resist and rsi14 >= 55:
+    if near_resist and rsi14 >= 55 and weekly_permit_short:
         sc = {
             "type": "SIDEWAY_RANGE",
             "phase": "MEAN_REVERT",
@@ -198,6 +202,9 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
 
     # SIDEWAY -> engine แยก
     if mode == "SIDEWAY":
+        # ✅ FIX: ส่ง MTF permit เข้าไปด้วย
+        base["weekly_permit_long"] = weekly_permit_long
+        base["weekly_permit_short"] = weekly_permit_short
         return run_sideway_engine(symbol, df, base)
 
     # 2) Pivot detection (1D)
@@ -238,7 +245,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         gated = apply_context_gate(
             scenario=sc,
             macro_bias=macro_bias,
-            min_confidence=70.0,
+            min_confidence=MIN_CONFIDENCE_LIVE,
         )
         if isinstance(gated, dict) and gated.get("direction"):
             gated_scenarios.append(gated)
@@ -268,6 +275,11 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
 
         # ✅ FIX: เช็ค mtf_ok ก่อน build_trade_plan (เดิมเช็คผิดที่)
         if not mtf_ok:
+            logger.info(
+                f"[{symbol}] MTF block: direction={direction} "
+                f"h4_confirm_long={h4_confirm_long} h4_confirm_short={h4_confirm_short} "
+                f"notes={mtf.get('notes')}"
+            )
             continue
 
         trade_plan = build_trade_plan(

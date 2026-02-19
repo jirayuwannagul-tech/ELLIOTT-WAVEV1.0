@@ -17,6 +17,7 @@ from app.indicators.trend_filter import trend_filter_ema, allow_direction
 from app.analysis.context_gate import apply_context_gate
 from app.analysis.market_regime import detect_market_regime
 from app.analysis.macro_bias import compute_macro_bias
+from app.config.wave_settings import MIN_CONFIDENCE_BACKTEST
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ def _get_scenarios(sub: pd.DataFrame, macro_trend: str, rsi14: float, is_vol_spi
 
     gated: List[Dict] = []
     for sc in scenarios:
-        r = apply_context_gate(sc, macro_bias=macro_bias, min_confidence=55.0)
+        r = apply_context_gate(sc, macro_bias=macro_bias, min_confidence=MIN_CONFIDENCE_BACKTEST)
         if r:
             gated.append(r)
 
@@ -249,7 +250,6 @@ def backtest_symbol(
             in_position = False
         else:
             skip_until_bar = (i + 1) + int(sim["bars"])
-            in_position = False
 
     wins = sum(1 for t in trades if t["result"] == "WIN")
     losses = sum(1 for t in trades if t["result"] == "LOSS")
@@ -390,7 +390,6 @@ def backtest_symbol_trades(
             in_position = False
         else:
             skip_until_bar = (i + 1) + int(sim["bars"])
-            in_position = False
 
     return {"symbol": symbol, "trades": trades}
 

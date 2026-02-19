@@ -44,7 +44,10 @@ def score_scenario(base_score, warnings, macro_trend, rsi14, volume_spike, direc
 def normalize_scores(scenarios: List[Dict]) -> List[Dict]:
     total = sum(s["score"] for s in scenarios) or 1.0
     for s in scenarios:
-        s["probability"] = round((s["score"] / total) * 100, 1)
+        # ✅ FIX: เปลี่ยนชื่อเป็น relative_score แทน probability
+        # เพราะนี่คือสัดส่วนคะแนนเทียบกัน ไม่ใช่ probability จริง
+        s["relative_score"] = round((s["score"] / total) * 100, 1)
+        s["probability"] = s["relative_score"]  # เก็บไว้กัน backward compat
         s["confidence"] = round(float(s["score"]), 1)
     return scenarios
 

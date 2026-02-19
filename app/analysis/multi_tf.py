@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
+import logging
+logger = logging.getLogger(__name__)
 
 from app.data.binance_fetcher import fetch_ohlcv, drop_unclosed_candle
 from app.indicators.ema import add_ema
@@ -52,6 +54,7 @@ def _h4_structure_confirm(df4h: pd.DataFrame) -> Tuple[bool, bool, str]:
     - SHORT confirm: close < last pivot-low price
     """
     if df4h is None or len(df4h) < 250:
+        logger.warning(f"4H data ไม่พอ (len={len(df4h) if df4h is not None else 0}) → h4_confirm=False")
         return False, False, "4H len<250"
 
     close = _last_close(df4h)
@@ -72,6 +75,7 @@ def _h4_structure_confirm(df4h: pd.DataFrame) -> Tuple[bool, bool, str]:
             break
 
     if lastH is None or lastL is None:
+        logger.warning(f"4H pivots ไม่พอ → h4_confirm=False")
         return False, False, "4H pivots not enough"
 
     confirm_long = close > lastH
@@ -93,6 +97,7 @@ def get_mtf_summary(
     df4 = _prepare_df(symbol, "4h", h4_limit)
 
     if dfw is None or len(dfw) < 250:
+        logger.warning(f"[{symbol}] MTF weekly data ไม่พอ (len={len(dfw) if dfw is not None else 0}) → permit both, h4 skip")
         s = MTFSummary(
             symbol=symbol,
             weekly_trend="NEUTRAL",

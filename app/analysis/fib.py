@@ -1,17 +1,18 @@
 def fib_retracement(start: float, end: float, current: float):
-    """
-    Calculate retracement ratio between start and end
-    """
-
     move = end - start
-
     if move == 0:
         return None
-
     retrace = (current - end) / move
 
-    return abs(retrace)
+    # ถ้า retrace เกิน 1.0 = ราคากลับเกินจุดเริ่มต้น Wave1 → invalid
+    if retrace > 1.0:
+        return None
 
+    # ถ้าติดลบ = ยังไม่ได้ retrace เลย → invalid
+    if retrace < 0:
+        return None
+
+    return retrace
 
 def fib_extension(a: float, b: float, c: float):
     """
