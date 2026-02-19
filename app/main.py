@@ -31,5 +31,10 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "run":
         print("Manual Run Mode...")
         run_daily_wave_job()
+
+    elif len(sys.argv) > 1 and sys.argv[1] == "trend-watch":
+        print("Manual Trend Watch Mode...")
+        run_trend_watch_job(min_conf=65.0)
+
     else:
         app.run(host="0.0.0.0", port=8080)

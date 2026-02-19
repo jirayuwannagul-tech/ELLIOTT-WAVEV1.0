@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Dict, Optional
 
 from app.analysis.fib import fib_extension
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_rr(entry: float, sl: float, tp: float) -> float:
@@ -11,6 +14,43 @@ def calculate_rr(entry: float, sl: float, tp: float) -> float:
     if risk == 0:
         return 0.0
     return reward / risk
+
+
+def _safe_fib_extension(p0: float, p1: float, anchor: float, direction: str, base_len: float) -> Dict:
+    """
+    คำนวณ fib_extension แบบปลอดภัย
+    ถ้า p0 == p1 หรือผลออกมาผิดทิศ → fallback คำนวณจาก base_len แทน
+    """
+    try:
+        if abs(p1 - p0) > 0:
+            targets = fib_extension(p0, p1, anchor)
+            t1 = float(targets["1.0"])
+            t2 = float(targets["1.618"])
+            t3 = float(targets["2.0"])
+
+            # ตรวจสอบว่า TP ถูกทิศไหม
+            if direction == "LONG" and t1 > anchor and t2 > t1 and t3 > t2:
+                return {"1.0": t1, "1.618": t2, "2.0": t3}
+            if direction == "SHORT" and t1 < anchor and t2 < t1 and t3 < t2:
+                return {"1.0": t1, "1.618": t2, "2.0": t3}
+
+            logger.warning(f"fib_extension ผิดทิศ direction={direction} t1={t1} anchor={anchor} → fallback")
+
+    except Exception as e:
+        logger.warning(f"fib_extension error: {e} → fallback")
+
+    # fallback: คำนวณจาก base_len
+    if direction == "LONG":
+        return {
+            "1.0": anchor + base_len * 1.0,
+            "1.618": anchor + base_len * 1.618,
+            "2.0": anchor + base_len * 2.0,
+        }
+    return {
+        "1.0": anchor - base_len * 1.0,
+        "1.618": anchor - base_len * 1.618,
+        "2.0": anchor - base_len * 2.0,
+    }
 
 
 def build_trade_plan(
@@ -66,11 +106,8 @@ def build_trade_plan(
         rr = calculate_rr(entry, sl, tp2)
         if rr >= min_rr:
             trade.update({
-                "entry": entry,
-                "sl": sl,
-                "tp1": tp1,
-                "tp2": tp2,
-                "tp3": tp3,
+                "entry": entry, "sl": sl,
+                "tp1": tp1, "tp2": tp2, "tp3": tp3,
                 "valid": True,
                 "reason": f"RR={round(rr, 2)} ≥ {min_rr}",
             })
@@ -79,7 +116,7 @@ def build_trade_plan(
         return trade
 
     # =========================
-    # ABC (Wave C projection)
+    # ABC
     # =========================
     if stype in ("ABC_DOWN", "ABC_UP"):
         pivots = scenario.get("pivots") or []
@@ -91,67 +128,39 @@ def build_trade_plan(
             h0 = float(pivots[0]["price"])
             l1 = float(pivots[1]["price"])
             h2 = float(pivots[2]["price"])
-
             a_len = abs(h0 - l1)
             entry = l1
             sl = h2
 
-            # ใช้ fib_extension คำนวณ target จริง
-            fib_targets = fib_extension(h0, l1, h2)
-            tp1 = fib_targets["1.0"]
-            tp2 = fib_targets["1.618"]
-            tp3 = fib_targets["2.0"]
+            fib = _safe_fib_extension(h0, l1, h2, "SHORT", a_len)
+            tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
-            # ถ้ามี sr resist ใกล้กว่า sl -> ปรับ sl ให้แน่นขึ้น
             if sr:
                 resist = (sr.get("resist") or {}).get("level")
                 if resist and float(resist) < sl:
                     sl = float(resist)
 
-            rr = calculate_rr(entry, sl, tp2)
-            if rr >= min_rr:
-                trade.update({
-                    "entry": entry,
-                    "sl": sl,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "tp3": tp3,
-                    "valid": True,
-                    "reason": f"RR={round(rr, 2)} ≥ {min_rr} (fib+sr)",
-                })
-            else:
-                trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
-            return trade
+        else:  # ABC_UP
+            l0 = float(pivots[0]["price"])
+            h1 = float(pivots[1]["price"])
+            l2 = float(pivots[2]["price"])
+            a_len = abs(h1 - l0)
+            entry = h1
+            sl = l2
 
-        # ABC_UP
-        l0 = float(pivots[0]["price"])
-        h1 = float(pivots[1]["price"])
-        l2 = float(pivots[2]["price"])
+            fib = _safe_fib_extension(l0, h1, l2, "LONG", a_len)
+            tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
-        a_len = abs(h1 - l0)
-        entry = h1
-        sl = l2
-
-        # ใช้ fib_extension คำนวณ target จริง
-        fib_targets = fib_extension(l0, h1, l2)
-        tp1 = fib_targets["1.0"]
-        tp2 = fib_targets["1.618"]
-        tp3 = fib_targets["2.0"]
-
-        # ถ้ามี sr support ใกล้กว่า sl -> ปรับ sl ให้แน่นขึ้น
-        if sr:
-            support = (sr.get("support") or {}).get("level")
-            if support and float(support) > sl:
-                sl = float(support)
+            if sr:
+                support = (sr.get("support") or {}).get("level")
+                if support and float(support) > sl:
+                    sl = float(support)
 
         rr = calculate_rr(entry, sl, tp2)
         if rr >= min_rr:
             trade.update({
-                "entry": entry,
-                "sl": sl,
-                "tp1": tp1,
-                "tp2": tp2,
-                "tp3": tp3,
+                "entry": entry, "sl": sl,
+                "tp1": tp1, "tp2": tp2, "tp3": tp3,
                 "valid": True,
                 "reason": f"RR={round(rr, 2)} ≥ {min_rr} (fib+sr)",
             })
@@ -160,7 +169,7 @@ def build_trade_plan(
         return trade
 
     # =========================
-    # IMPULSE (LONG / SHORT)
+    # IMPULSE
     # =========================
     pivots = scenario.get("pivots") or []
     if len(pivots) < 2:
@@ -170,35 +179,19 @@ def build_trade_plan(
     breakout = float(pivots[-1]["price"])
     sl = float(pivots[-2]["price"])
     entry = breakout
-
-    # ใช้ fib_extension คำนวณ TP จาก wave 1 (p0->p1) ต่อจาก entry
     p0 = float(pivots[0]["price"])
     p1 = float(pivots[1]["price"])
-    fib_targets = fib_extension(p0, p1, entry)
+    base_len = abs(p1 - p0)
+
+    fib = _safe_fib_extension(p0, p1, entry, direction, base_len)
+    tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
     if direction == "LONG":
-        tp1 = fib_targets["1.0"]
-        tp2 = fib_targets["1.618"]
-        tp3 = fib_targets["2.0"]
-
-        # ปรับ SL โดยใช้ sr support ถ้าอยู่เหนือ sl เดิม (แน่นขึ้น)
         if sr:
             support = (sr.get("support") or {}).get("level")
             if support and float(support) > sl:
                 sl = float(support)
-
     elif direction == "SHORT":
-        tp1 = fib_targets["1.0"]
-        tp2 = fib_targets["1.618"]
-        tp3 = fib_targets["2.0"]
-
-        # SHORT: fib_extension ออกทางลง ต้องกลับทิศ
-        base_len = abs(p1 - p0)
-        tp1 = entry - base_len * 1.0
-        tp2 = entry - base_len * 1.618
-        tp3 = entry - base_len * 2.0
-
-        # ปรับ SL โดยใช้ sr resist ถ้าอยู่ต่ำกว่า sl เดิม (แน่นขึ้น)
         if sr:
             resist = (sr.get("resist") or {}).get("level")
             if resist and float(resist) < sl:
@@ -210,11 +203,8 @@ def build_trade_plan(
     rr = calculate_rr(entry, sl, tp2)
     if rr >= min_rr:
         trade.update({
-            "entry": entry,
-            "sl": sl,
-            "tp1": tp1,
-            "tp2": tp2,
-            "tp3": tp3,
+            "entry": entry, "sl": sl,
+            "tp1": tp1, "tp2": tp2, "tp3": tp3,
             "valid": True,
             "reason": f"RR={round(rr, 2)} ≥ {min_rr} (fib+sr)",
         })
