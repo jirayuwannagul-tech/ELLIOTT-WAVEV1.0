@@ -32,7 +32,7 @@ except Exception:
     def detect_market_mode(df: pd.DataFrame) -> str:
         """Fallback: ถ้าไม่มี trend_detector ให้ map จาก market_regime"""
         try:
-            reg = (detect_market_regime(df) or "").upper()
+            reg = (detect_market_regime(df) or {}).get("regime", "CHOP").upper()
             if "SIDE" in reg or "RANGE" in reg:
                 return "SIDEWAY"
             return "TREND"
@@ -74,8 +74,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
     เงื่อนไขเข้าแบบง่าย:
     - LONG: ราคาใกล้ range_low + buffer และ RSI ต่ำ
     - SHORT: ราคาใกล้ range_high - buffer และ RSI สูง
-
-    หมายเหตุ: โค้ดนี้ตั้งใจให้ "มีระบบ" แต่ยัง conservative (ยิงน้อย)
     """
     base = dict(base or {})
 
@@ -203,7 +201,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         "position_size_mult": size_mult,
     }
 
-    # SIDEWAY -> ตอนนี้ให้มี engine แยก (ยิงน้อย) หรือจะปรับเป็น "skip" ได้ทีหลัง
+    # SIDEWAY -> engine แยก
     if mode == "SIDEWAY":
         return run_sideway_engine(symbol, df, base)
 
@@ -230,11 +228,11 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         volume_spike=is_vol_spike,
     )
 
-    # 3.5) Context gate
+    # 3.5) Context gate — ✅ FIX: ใช้ compute_macro_bias จริง ไม่ hardcode
     regime = detect_market_regime(df)
     macro_bias = compute_macro_bias(regime, rsi14=rsi14)
 
-    gated_scenarios = []
+    gated_scenarios: List[Dict] = []
     for sc in (scenarios or []):
         gated = apply_context_gate(
             scenario=sc,
@@ -254,17 +252,22 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         if not direction:
             continue
 
-        # --- MTF Gate ---
+        # --- MTF Gate (weekly permit) ---
         if direction == "LONG" and not weekly_permit_long:
             continue
         if direction == "SHORT" and not weekly_permit_short:
             continue
 
+        # --- MTF Gate (4H confirm) ---
         mtf_ok = True
         if direction == "LONG" and not h4_confirm_long:
             mtf_ok = False
         if direction == "SHORT" and not h4_confirm_short:
             mtf_ok = False
+
+        # ✅ FIX: เช็ค mtf_ok ก่อน build_trade_plan (เดิมเช็คผิดที่)
+        if not mtf_ok:
+            continue
 
         # Trend filter (1D macro)
         if not allow_direction(macro_trend, direction):
@@ -276,7 +279,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         if direction == "SHORT" and rsi14 > 50:
             continue
 
-        # SNIPER FILTER (ยิงน้อยแต่คม)
+        # SNIPER FILTER
         if float(scenario.get("confidence") or 0) < 70:
             continue
 
