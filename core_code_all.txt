@@ -560,11 +560,40 @@ def filter_pivots(pivots, min_pct_move: float = 0.5):
             filtered.append(pivot)
 
     return filtered
+===== app/analysis/trend_detector.py =====
+def detect_market_mode(df):
+    """
+    แยกตลาดเป็น TREND หรือ SIDEWAY แบบง่าย
+    ใช้ EMA50 / EMA200 + ATR
+    """
+
+    if "ema50" not in df.columns or "ema200" not in df.columns:
+        return "TREND"
+
+    ema50 = float(df["ema50"].iloc[-1])
+    ema200 = float(df["ema200"].iloc[-1])
+    atr = float(df["atr14"].iloc[-1]) if "atr14" in df.columns else 0.0
+    price = float(df["close"].iloc[-1])
+
+    # ถ้า EMA ใกล้กันมาก + ATR ต่ำ → sideway
+    ema_gap_pct = abs(ema50 - ema200) / price * 100
+
+    if ema_gap_pct < 0.5 and atr / price < 0.02:
+        return "SIDEWAY"
+
+    return "TREND"
 ===== app/analysis/wave_engine.py =====
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+import pandas as pd
+
 from app.data.binance_fetcher import fetch_ohlcv, drop_unclosed_candle
 from app.analysis.pivot import find_fractal_pivots, filter_pivots
 from app.analysis.wave_scenarios import build_scenarios
 from app.risk.risk_manager import build_trade_plan
+
 from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR
 
 from app.indicators.ema import add_ema
@@ -572,18 +601,145 @@ from app.indicators.rsi import add_rsi
 from app.indicators.atr import add_atr
 from app.indicators.volume import add_volume_ma, volume_spike
 from app.indicators.trend_filter import trend_filter_ema, allow_direction
+
 from app.analysis.wave_labeler import label_pivot_chain
 from app.analysis.context_gate import apply_context_gate
-from app.analysis.market_regime import detect_market_regime  
-from app.analysis.macro_bias import compute_macro_bias         
+from app.analysis.market_regime import detect_market_regime
+from app.analysis.macro_bias import compute_macro_bias
 from app.analysis.multi_tf import get_mtf_summary
+from app.analysis.zones import build_zones_from_pivots, nearest_support_resist
+from app.analysis.trend_detector import detect_market_mode
 
-def analyze_symbol(symbol: str):
+
+def _safe_float(x, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+def _range_levels(df: pd.DataFrame, lookback: int = 60) -> Dict:
+    """คำนวณกรอบ sideway แบบง่ายจาก lookback ล่าสุด"""
+    if df is None or len(df) < max(lookback, 20):
+        return {"range_low": None, "range_high": None, "atr": None}
+
+    sub = df.iloc[-lookback:].copy()
+    range_low = _safe_float(sub["low"].min(), 0.0)
+    range_high = _safe_float(sub["high"].max(), 0.0)
+
+    atr = None
+    if "atr14" in sub.columns:
+        atr = _safe_float(sub["atr14"].iloc[-1], 0.0)
+
+    return {
+        "range_low": float(range_low) if range_low else None,
+        "range_high": float(range_high) if range_high else None,
+        "atr": float(atr) if atr else None,
+    }
+
+
+def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
+    """
+    SIDEWAY ENGINE (v0): mean-reversion ในกรอบ
+
+    เงื่อนไขเข้าแบบง่าย:
+    - LONG: ราคาใกล้ range_low + buffer และ RSI ต่ำ
+    - SHORT: ราคาใกล้ range_high - buffer และ RSI สูง
+    """
+    base = dict(base or {})
+
+    price = _safe_float(base.get("price"), 0.0)
+    rsi14 = _safe_float(base.get("rsi14"), 50.0)
+
+    lv = _range_levels(df, lookback=60)
+    range_low = lv.get("range_low")
+    range_high = lv.get("range_high")
+    atr = lv.get("atr")
+
+    base["sideway"] = {
+        "range_low": range_low,
+        "range_high": range_high,
+        "atr": atr,
+        "lookback": 60,
+    }
+
+    # ถ้าข้อมูลไม่พอ -> คืนแบบไม่ยิงสัญญาณ
+    if not range_low or not range_high or range_high <= range_low:
+        base["scenarios"] = []
+        base["message"] = "SIDEWAY: ข้อมูลยังไม่พอคำนวณกรอบ"
+        return base
+
+    # buffer กันหลอก: ใช้ ATR ถ้ามี ไม่งั้นใช้ 0.5% ของราคา
+    buffer = float(atr) * 0.5 if atr and atr > 0 else float(price) * 0.005
+
+    near_support = price <= (range_low + buffer)
+    near_resist = price >= (range_high - buffer)
+
+    scenarios: List[Dict] = []
+
+    # LONG near support + RSI low
+    if near_support and rsi14 <= 45:
+        sc = {
+            "type": "SIDEWAY_RANGE",
+            "phase": "MEAN_REVERT",
+            "direction": "LONG",
+            "probability": 0.0,
+            "confidence": 65.0,
+            # ✅ ADD
+            "range_low": range_low,
+            "range_high": range_high,
+            "atr": atr,
+            "reasons": [
+                f"Near range low ({range_low:,.2f})",
+                f"RSI14 low ({rsi14:.1f})",
+            ],
+        }
+        plan = build_trade_plan(sc, current_price=price, min_rr=2.0)
+        plan["triggered"] = True
+        sc["trade_plan"] = plan
+        scenarios.append(sc)
+
+    # SHORT near resist + RSI high
+    if near_resist and rsi14 >= 55:
+        sc = {
+            "type": "SIDEWAY_RANGE",
+            "phase": "MEAN_REVERT",
+            "direction": "SHORT",
+            "probability": 0.0,
+            "confidence": 65.0,
+            # ✅ ADD
+            "range_low": range_low,
+            "range_high": range_high,
+            "atr": atr,
+            "reasons": [
+                f"Near range high ({range_high:,.2f})",
+                f"RSI14 high ({rsi14:.1f})",
+            ],
+        }
+        plan = build_trade_plan(sc, current_price=price, min_rr=2.0)
+        plan["triggered"] = True
+        sc["trade_plan"] = plan
+        scenarios.append(sc)
+
+    base["scenarios"] = scenarios
+
+    if scenarios:
+        base["message"] = (
+            f"SIDEWAY: พบ setup ในกรอบ ({range_low:,.2f} - {range_high:,.2f})"
+        )
+    else:
+        base["message"] = (
+            f"SIDEWAY: ยังไม่เข้าเงื่อนไข (กรอบ {range_low:,.2f} - {range_high:,.2f})"
+        )
+
+    return base
+
+
+def analyze_symbol(symbol: str) -> Optional[Dict]:
     # 1) Fetch data (1D)
     df = fetch_ohlcv(symbol, interval=TIMEFRAME, limit=BARS)
     df = drop_unclosed_candle(df)
 
-    if len(df) < 250:  # ต้องพอสำหรับ EMA200
+    if df is None or len(df) < 250:  # ต้องพอสำหรับ EMA200
         return None
 
     # 1.5) Add indicators (1D)
@@ -594,113 +750,116 @@ def analyze_symbol(symbol: str):
 
     last_close = float(df["close"].iloc[-1])
     current_price = last_close
-    close_today = float(df["close"].iloc[-1])
+    close_today = last_close
     close_yesterday = float(df["close"].iloc[-2]) if len(df) >= 2 else None
 
     macro_trend = trend_filter_ema(df)  # BULL/BEAR/NEUTRAL (1D)
     rsi14 = float(df["rsi14"].iloc[-1])
     is_vol_spike = bool(volume_spike(df, length=20, multiplier=1.5))
 
-    # 1.8) MTF summary (1W permit / 4H confirm)  ✅ ใช้งานจริงใน pipeline
+    # 1.6) Trend / Sideway mode
+    mode = detect_market_mode(df)
+    size_mult = 1.0 if mode == "TREND" else 0.5
+
+    # 1.8) MTF summary (1W permit / 4H confirm)
     mtf = get_mtf_summary(symbol) or {}
     weekly_permit_long = bool(mtf.get("weekly_permit_long", True))
     weekly_permit_short = bool(mtf.get("weekly_permit_short", True))
     h4_confirm_long = bool(mtf.get("h4_confirm_long", False))
     h4_confirm_short = bool(mtf.get("h4_confirm_short", False))
 
+    base = {
+        "symbol": symbol,
+        "price": current_price,
+        "close_today": close_today,
+        "close_yesterday": close_yesterday,
+        "macro_trend": macro_trend,
+        "rsi14": rsi14,
+        "volume_spike": is_vol_spike,
+        "mtf": mtf,
+        "mode": mode,
+        "position_size_mult": size_mult,
+    }
+
+    # SIDEWAY -> engine แยก
+    if mode == "SIDEWAY":
+        return run_sideway_engine(symbol, df, base)
+
     # 2) Pivot detection (1D)
     pivots = find_fractal_pivots(df)
     pivots = filter_pivots(pivots, min_pct_move=1.5)
     wave_label = label_pivot_chain(pivots)
 
+    # 2.5) Build SR zones from pivots
+    zones = build_zones_from_pivots(df)
+    sr = nearest_support_resist(zones, price=current_price)
+
     if len(pivots) < 4:
-        return {
-            "symbol": symbol,
-            "price": current_price,
-            "close_today": close_today,
-            "close_yesterday": close_yesterday,
-            "macro_trend": macro_trend,
-            "rsi14": rsi14,
-            "volume_spike": is_vol_spike,
-            "mtf": mtf,
+        out = dict(base)
+        out.update({
             "scenarios": [],
             "message": "โครงสร้างยังไม่ชัด",
             "wave_label": wave_label,
-        }
+            "sideway": None,
+        "zones": zones if zones else [],
+        "sr": sr if sr else {},
+        })
+        return out
 
     # 3) Build scenarios (top 3) (1D)
     scenarios = build_scenarios(
         pivots,
         macro_trend=macro_trend,
         rsi14=rsi14,
-        volume_spike=is_vol_spike
+        volume_spike=is_vol_spike,
     )
 
-    # 3.5) Context gate (signature: scenario, macro_bias, min_confidence)
-    macro_bias = {
-        "bias": "NEUTRAL",          # ถ้าคุณมี compute_macro_bias จริง ค่อยเปลี่ยนทีหลัง
-        "strength": 0.0,
-        "allow_long": True,
-        "allow_short": True,
-    }
+    # 3.5) Context gate — ✅ FIX: ใช้ compute_macro_bias จริง ไม่ hardcode
+    regime = detect_market_regime(df)
+    macro_bias = compute_macro_bias(regime, rsi14=rsi14)
 
-    gated_scenarios = []
+    gated_scenarios: List[Dict] = []
     for sc in (scenarios or []):
         gated = apply_context_gate(
             scenario=sc,
             macro_bias=macro_bias,
-            min_confidence=55.0,
+            min_confidence=70.0,
         )
         if isinstance(gated, dict) and gated.get("direction"):
             gated_scenarios.append(gated)
 
     scenarios = gated_scenarios
 
-    results = []
+    results: List[Dict] = []
 
-    # 4) Build trade plan per scenario  ✅ ใส่ MTF gate ตรงนี้จริง
-    for scenario in scenarios:
+    # 4) Build trade plan per scenario
+    for scenario in (scenarios or []):
         direction = (scenario.get("direction") or "").upper()
         if not direction:
             continue
 
-        # --- MTF Gate ---
+        # --- MTF Gate (weekly permit) ---
         if direction == "LONG" and not weekly_permit_long:
             continue
         if direction == "SHORT" and not weekly_permit_short:
             continue
 
+        # --- MTF Gate (4H confirm) ---
         mtf_ok = True
         if direction == "LONG" and not h4_confirm_long:
             mtf_ok = False
         if direction == "SHORT" and not h4_confirm_short:
             mtf_ok = False
 
-        # Trend filter (1D macro)
-        if not allow_direction(macro_trend, direction):
-            continue
-
-        # RSI filter (1D momentum)
-        if direction == "LONG" and rsi14 < 50:
-            continue
-        if direction == "SHORT" and rsi14 > 50:
-            continue
-
-        # SNIPER FILTER
-        if float(scenario.get("confidence", 0)) < 70:
+        # ✅ FIX: เช็ค mtf_ok ก่อน build_trade_plan (เดิมเช็คผิดที่)
+        if not mtf_ok:
             continue
 
         trade_plan = build_trade_plan(
             scenario,
             current_price=current_price,
-            min_rr=3.0
+            min_rr=float(MIN_RR) if MIN_RR else 3.0,
         )
-
-        if not scenario.get("mtf_ok", True):
-            continue
-
-        if not trade_plan.get("triggered"):
-            continue
 
         # Close-confirm trigger
         entry = trade_plan.get("entry")
@@ -718,11 +877,12 @@ def analyze_symbol(symbol: str):
         trade_plan["volume_ok"] = is_vol_spike
 
         results.append({
-            "type": scenario["type"],
-            "phase": scenario["phase"],
+            "type": scenario.get("type"),
+            "phase": scenario.get("phase"),
             "direction": direction,
             "probability": scenario.get("probability"),
             "confidence": scenario.get("confidence"),
+            "context_score": scenario.get("context_score"),
             "mtf_ok": mtf_ok,
             "trade_plan": trade_plan,
             "reasons": scenario.get("reasons", []),
@@ -731,25 +891,22 @@ def analyze_symbol(symbol: str):
     msg = None
     if scenarios and not results:
         msg = (
-            f"โดนกรองด้วย MTF/Trend/RSI "
+            f"โดนกรองด้วย MTF/Trend/RSI/SNIPER "
             f"(1D={macro_trend}, rsi14={rsi14:.1f}, "
             f"1Wpermit(L/S)={weekly_permit_long}/{weekly_permit_short}, "
             f"4Hconfirm(L/S)={h4_confirm_long}/{h4_confirm_short})"
         )
 
-    return {
-        "symbol": symbol,
-        "price": current_price,
-        "close_today": close_today,
-        "close_yesterday": close_yesterday,
-        "macro_trend": macro_trend,
-        "rsi14": rsi14,
-        "volume_spike": is_vol_spike,
-        "mtf": mtf,
+    out = dict(base)
+    out.update({
         "scenarios": results,
         "message": msg,
         "wave_label": wave_label,
-    }
+        "sideway": None,
+        "zones": zones if zones else [],
+        "sr": sr if sr else {},
+    })
+    return out
 ===== app/analysis/wave_labeler.py =====
 from __future__ import annotations
 
@@ -894,6 +1051,7 @@ def label_pivot_chain(pivots: List[Dict]) -> Dict:
 
 ===== app/analysis/wave_rules.py =====
 from typing import Dict, List, Tuple
+from app.analysis.fib import fib_retracement, fib_extension, fib_zone_match
 
 
 def _is_alternating_types(points: List[Dict]) -> bool:
@@ -980,11 +1138,12 @@ def validate_impulse(points: List[Dict], direction: str) -> Tuple[bool, List[str
     if wave1_len == 0:
         reasons.append("Wave1 length = 0 (คำนวณ Fib ไม่ได้)")
     else:
-        wave2_retrace = abs((_price(points, 2) - _price(points, 1)) / wave1_len)
-        if not (0.382 <= wave2_retrace <= 0.786):
+        wave2_retrace = fib_retracement(_price(points, 0), _price(points, 1), _price(points, 2))
+        if wave2_retrace is None or not fib_zone_match(wave2_retrace):
             reasons.append("Wave2 retrace ไม่อยู่ในช่วง 0.382–0.786")
 
         # Wave3 extension
+        wave3_targets = fib_extension(_price(points, 0), _price(points, 1), _price(points, 2))
         wave3_ext = w3 / abs(wave1_len)
         if wave3_ext < 1.0:
             reasons.append("Wave3 extension < 1.0 (อ่อนเกิน)")
@@ -1063,36 +1222,8 @@ def validate_abc(points: List[Dict], direction: str) -> Tuple[bool, List[str]]:
         reasons.append("ABC: Wave C สั้นกว่า A (อ่อน)")
     elif c_ext >= 1.618:
         reasons.append("ABC: Wave C ยืดแรง (>=1.618)")
-
     return True, reasons
 
-def invalidation_level_for_entry(entry_type: str, pivots: Dict) -> float:
-    """
-    Return invalidation price (SL reference) based on chosen entry type.
-    entry_type: "W2_LONG", "W4_LONG", "W2_SHORT", "W4_SHORT", "C_LONG", "C_SHORT"
-    pivots: dict containing required pivot prices (keys depend on entry_type)
-    """
-    t = (entry_type or "").upper().strip()
-
-    # Wave 2 entries
-    if t == "W2_LONG":
-        return float(pivots["wave1_start"])  # below this = invalid
-    if t == "W2_SHORT":
-        return float(pivots["wave1_start"])  # above this = invalid
-
-    # Wave 4 entries
-    if t == "W4_LONG":
-        return float(pivots["wave3_start"])
-    if t == "W4_SHORT":
-        return float(pivots["wave3_start"])
-
-    # Wave C entries (use B pivot as invalidation reference by default)
-    if t == "C_LONG":
-        return float(pivots["b_pivot"])
-    if t == "C_SHORT":
-        return float(pivots["b_pivot"])
-
-    raise KeyError(f"unknown entry_type: {entry_type}")
 ===== app/analysis/wave_scenarios.py =====
 from typing import List, Dict
 from app.analysis.wave_rules import validate_impulse, validate_abc
@@ -1382,7 +1513,11 @@ def nearest_support_resist(zones: list, price: float) -> dict:
 ===== app/backtest/__init__.py =====
 
 ===== app/backtest/backtest_runner.py =====
-from typing import Dict, List
+from __future__ import annotations
+
+import logging
+from typing import Dict, List, Optional
+
 import pandas as pd
 
 from app.data.binance_fetcher import fetch_ohlcv, drop_unclosed_candle
@@ -1398,22 +1533,58 @@ from app.analysis.context_gate import apply_context_gate
 from app.analysis.market_regime import detect_market_regime
 from app.analysis.macro_bias import compute_macro_bias
 
-def _simulate_one_trade(df: pd.DataFrame, start_i: int, direction: str, entry: float, sl: float, tp1: float, tp2: float, tp3: float) -> Dict:
+logger = logging.getLogger(__name__)
+
+# ---- constants ----
+_START_BAR = 250
+_EMPTY_BUCKETS = {
+    "conf>=60": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
+    "conf>=70": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
+    "conf>=80": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
+}
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def _prepare_df(symbol: str, interval: str, limit: int) -> Optional[pd.DataFrame]:
+    """Fetch + drop unclosed + add indicators. คืน None ถ้าข้อมูลไม่พอ"""
+    df = fetch_ohlcv(symbol, interval=interval, limit=limit)
+    df = drop_unclosed_candle(df)
+    if df is None or len(df) < _START_BAR:
+        return None
+    df = add_ema(df, lengths=(50, 200))
+    df = add_rsi(df, length=14)
+    df = add_atr(df, length=14)
+    df = add_volume_ma(df, length=20)
+    return df
+
+
+def _simulate_one_trade(
+    df: pd.DataFrame,
+    start_i: int,
+    direction: str,
+    entry: float,
+    sl: float,
+    tp1: float,
+    tp2: float,
+    tp3: float,
+) -> Dict:
     """
     เดินแท่งจาก start_i ไปข้างหน้า จนเจอ SL หรือ TP3
-    หมายเหตุ: ใช้ high/low เพื่อเช็คการชนระดับ (simple backtest)
+    - เช็ค SL ก่อนเสมอ (conservative)
+    - ถ้าครบ df โดยไม่เจอ SL/TP → OPEN
     """
     for i in range(start_i, len(df)):
         high = float(df["high"].iloc[i])
         low = float(df["low"].iloc[i])
 
         if direction == "LONG":
-            # SL ก่อน (conservative)
             if low <= sl:
                 return {"result": "LOSS", "exit": sl, "bars": i - start_i}
             if high >= tp3:
                 return {"result": "WIN", "exit": tp3, "bars": i - start_i}
-
         else:  # SHORT
             if high >= sl:
                 return {"result": "LOSS", "exit": sl, "bars": i - start_i}
@@ -1423,86 +1594,124 @@ def _simulate_one_trade(df: pd.DataFrame, start_i: int, direction: str, entry: f
     return {"result": "OPEN", "exit": None, "bars": len(df) - start_i}
 
 
-def backtest_symbol(symbol: str, interval: str = "1d", limit: int = 1000, min_pct_move: float = 1.5, min_rr: float = 2.0) -> Dict:
-    """
-    Backtest แบบง่าย:
-    - ใช้ข้อมูลย้อนหลัง limit แท่ง
-    - ทุกแท่ง (หลังมีข้อมูลพอ) จะลองสร้าง scenario จาก pivot ล่าสุด
-    - ถ้า trade_plan valid + triggered (close confirm) → เปิด 1 เทรด
-    - 1 เทรดจบเมื่อ SL หรือ TP3
-    - ไม่มีการเปิดซ้อน (strict)
-    """
-    df = fetch_ohlcv(symbol, interval=interval, limit=limit)
-    df = drop_unclosed_candle(df)
+def _get_scenarios(sub: pd.DataFrame, macro_trend: str, rsi14: float, is_vol_spike: bool) -> List[Dict]:
+    """pivot → build_scenarios → context_gate → คืน gated scenarios"""
+    pivots = find_fractal_pivots(sub)
+    pivots = filter_pivots(pivots, min_pct_move=1.5)
+    if len(pivots) < 4:
+        return []
 
-    if len(df) < 250:
-        return {
-            "symbol": symbol,
-            "trades": 0,
-            "wins": 0,
-            "losses": 0,
-            "open": 0,
-            "winrate": 0.0,
-            "buckets": {
-                "conf>=60": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
-                "conf>=70": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
-                "conf>=80": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
-            },
-        }
+    scenarios = build_scenarios(
+        pivots,
+        macro_trend=macro_trend,
+        rsi14=rsi14,
+        volume_spike=is_vol_spike,
+    )
+    if not scenarios:
+        return []
 
-    df = add_ema(df, lengths=(50, 200))
-    df = add_rsi(df, length=14)
-    df = add_atr(df, length=14)
-    df = add_volume_ma(df, length=20)
+    regime = detect_market_regime(sub)
+    macro_bias = compute_macro_bias(regime, rsi14=rsi14)
+
+    gated: List[Dict] = []
+    for sc in scenarios:
+        r = apply_context_gate(sc, macro_bias=macro_bias, min_confidence=55.0)
+        if r:
+            gated.append(r)
+
+    return gated
+
+
+def _r_multiple(direction: str, entry: float, sl: float, tp3: float, result: str) -> float:
+    """คิดผลเป็นหน่วย R: LOSS=-1R, WIN=+RR, OPEN=0"""
+    risk = abs(entry - sl)
+    if risk <= 0:
+        return 0.0
+    rr_tp3 = abs(tp3 - entry) / risk
+    if result == "LOSS":
+        return -1.0
+    if result == "WIN":
+        return float(rr_tp3)
+    return 0.0
+
+
+def _bucket_stats(trades: List[Dict], min_conf: float) -> Dict:
+    bucket = [t for t in trades if float(t.get("confidence") or 0) >= min_conf]
+    w = sum(1 for t in bucket if t["result"] == "WIN")
+    l = sum(1 for t in bucket if t["result"] == "LOSS")
+    o = sum(1 for t in bucket if t["result"] == "OPEN")
+    closed = w + l
+    wr = round((w / closed) * 100, 2) if closed > 0 else 0.0
+    return {"trades": len(bucket), "wins": w, "losses": l, "open": o, "winrate": wr}
+
+
+def _safe_entry_time(t: Dict):
+    """sort key ที่กัน NaT/None ไม่ให้ TypeError"""
+    v = t.get("entry_time")
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return pd.Timestamp.min.tz_localize("UTC")
+    if isinstance(v, pd.Timestamp) and pd.isna(v):
+        return pd.Timestamp.min.tz_localize("UTC")
+    return v
+
+
+# ---------------------------------------------------------------------------
+# backtest_symbol
+# ---------------------------------------------------------------------------
+
+def backtest_symbol(
+    symbol: str,
+    interval: str = "1d",
+    limit: int = 1000,
+    min_pct_move: float = 1.5,
+    min_rr: float = 2.0,
+) -> Dict:
+    """
+    Backtest แบบง่าย (summary stats เท่านั้น):
+    - ทุกแท่งที่ผ่าน filter → เปิด 1 เทรด (ไม่ซ้อน)
+    - จบเมื่อ SL หรือ TP3
+    """
+    _empty = {
+        "symbol": symbol,
+        "trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "open": 0,
+        "winrate": 0.0,
+        "conf_min": 0.0,
+        "conf_max": 0.0,
+        "conf_avg": 0.0,
+        "buckets": _EMPTY_BUCKETS,
+    }
+
+    df = _prepare_df(symbol, interval, limit)
+    if df is None:
+        return _empty
 
     trades: List[Dict] = []
     in_position = False
-    skip_until_bar = 0      # ✅ กัน bar ซ้อนกันกรณี OPEN
-    start_bar = 250
+    skip_until_bar = 0
 
-    for i in range(start_bar, len(df) - 1):
-        if in_position or i < skip_until_bar:   # ✅ เพิ่ม skip_until_bar
+    for i in range(_START_BAR, len(df) - 1):
+        if in_position or i < skip_until_bar:
             continue
 
         sub = df.iloc[: i + 1].copy()
-
         macro_trend = trend_filter_ema(sub)
         rsi14 = float(sub["rsi14"].iloc[-1])
         is_vol_spike = bool(volume_spike(sub, length=20, multiplier=1.5))
         last_close = float(sub["close"].iloc[-1])
 
-        pivots = find_fractal_pivots(sub)
-        pivots = filter_pivots(pivots, min_pct_move=min_pct_move)
-        if len(pivots) < 4:
-            continue
-
-        scenarios = build_scenarios(
-            pivots,
-            macro_trend=macro_trend,
-            rsi14=rsi14,
-            volume_spike=is_vol_spike
-        )
+        scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
         if not scenarios:
             continue
 
-        regime = detect_market_regime(sub)
-        macro_bias = compute_macro_bias(regime, rsi14=rsi14)
-        gated = []
-        for sc in scenarios:
-            r = apply_context_gate(sc, macro_bias=macro_bias, min_confidence=55.0)
-            if r:
-                gated.append(r)
-        if not gated:
-            continue
-        scenarios = gated
-
         sc = scenarios[0]
         direction = sc["direction"]
-        print(f"regime={regime}, macro_bias={macro_bias}, conf={sc.get('confidence')}")
 
+        # filters
         if not allow_direction(macro_trend, direction):
             continue
-
         if direction == "LONG" and rsi14 < 50:
             continue
         if direction == "SHORT" and rsi14 > 50:
@@ -1514,11 +1723,10 @@ def backtest_symbol(symbol: str, interval: str = "1d", limit: int = 1000, min_pc
 
         entry = float(trade_plan["entry"])
 
-        triggered = False
-        if direction == "LONG" and last_close > entry:
-            triggered = True
-        if direction == "SHORT" and last_close < entry:
-            triggered = True
+        triggered = (
+            (direction == "LONG" and last_close > entry)
+            or (direction == "SHORT" and last_close < entry)
+        )
         if not triggered:
             continue
 
@@ -1547,7 +1755,11 @@ def backtest_symbol(symbol: str, interval: str = "1d", limit: int = 1000, min_pc
             "bars_held": sim["bars"],
         })
 
-        # ✅ indent ถูก + set skip_until_bar กรณี OPEN
+        logger.debug(
+            "bar=%d dir=%s conf=%.1f result=%s",
+            i, direction, trades[-1]["confidence"], sim["result"],
+        )
+
         if sim["result"] in ("WIN", "LOSS"):
             in_position = False
         else:
@@ -1559,26 +1771,11 @@ def backtest_symbol(symbol: str, interval: str = "1d", limit: int = 1000, min_pc
     opens = sum(1 for t in trades if t["result"] == "OPEN")
     total_closed = wins + losses
     winrate = round((wins / total_closed) * 100, 2) if total_closed > 0 else 0.0
+
     conf_values = [float(t.get("confidence") or 0) for t in trades]
     conf_min = round(min(conf_values), 2) if conf_values else 0.0
     conf_max = round(max(conf_values), 2) if conf_values else 0.0
     conf_avg = round(sum(conf_values) / len(conf_values), 2) if conf_values else 0.0
-
-    # ---- Confidence buckets ----
-    def _bucket_stats(min_conf: float) -> Dict:
-        bucket = [t for t in trades if float(t.get("confidence") or 0) >= min_conf]
-        w = sum(1 for t in bucket if t["result"] == "WIN")
-        l = sum(1 for t in bucket if t["result"] == "LOSS")
-        o = sum(1 for t in bucket if t["result"] == "OPEN")
-        closed = w + l
-        wr = round((w / closed) * 100, 2) if closed > 0 else 0.0
-        return {"trades": len(bucket), "wins": w, "losses": l, "open": o, "winrate": wr}
-
-    buckets = {
-        "conf>=60": _bucket_stats(60),
-        "conf>=70": _bucket_stats(70),
-        "conf>=80": _bucket_stats(80),
-    }
 
     return {
         "symbol": symbol,
@@ -1590,28 +1787,17 @@ def backtest_symbol(symbol: str, interval: str = "1d", limit: int = 1000, min_pc
         "conf_min": conf_min,
         "conf_max": conf_max,
         "conf_avg": conf_avg,
-        "buckets": buckets,
+        "buckets": {
+            "conf>=60": _bucket_stats(trades, 60),
+            "conf>=70": _bucket_stats(trades, 70),
+            "conf>=80": _bucket_stats(trades, 80),
+        },
     }
 
 
-def _r_multiple(direction: str, entry: float, sl: float, tp3: float, result: str) -> float:
-    """
-    คิดผลเป็นหน่วย R
-    - LOSS = -1R
-    - WIN  = +RR_tp3 (เช่น 2R ถ้า tp3/SL ระยะเท่ากับ 2 เท่าของความเสี่ยง)
-    """
-    risk = abs(entry - sl)
-    if risk <= 0:
-        return 0.0
-
-    rr_tp3 = abs(tp3 - entry) / risk
-
-    if result == "LOSS":
-        return -1.0
-    if result == "WIN":
-        return float(rr_tp3)
-    return 0.0
-
+# ---------------------------------------------------------------------------
+# backtest_symbol_trades
+# ---------------------------------------------------------------------------
 
 def backtest_symbol_trades(
     symbol: str,
@@ -1623,57 +1809,34 @@ def backtest_symbol_trades(
 ) -> Dict:
     """
     เหมือน backtest_symbol แต่คืน trades list พร้อม entry/exit time + R multiple
+    ใช้สำหรับ portfolio_simulator
     """
-    df = fetch_ohlcv(symbol, interval=interval, limit=limit)
-    df = drop_unclosed_candle(df)
-
-    if len(df) < 250:
+    df = _prepare_df(symbol, interval, limit)
+    if df is None:
         return {"symbol": symbol, "trades": []}
-
-    df = add_ema(df, lengths=(50, 200))
-    df = add_rsi(df, length=14)
-    df = add_atr(df, length=14)
-    df = add_volume_ma(df, length=20)
 
     trades: List[Dict] = []
     in_position = False
-    skip_until_bar = 0      # ✅ กัน bar ซ้อนกันกรณี OPEN
-    start_bar = 250
+    skip_until_bar = 0
 
-    for i in range(start_bar, len(df) - 1):
-        if in_position or i < skip_until_bar:   # ✅ เพิ่ม skip_until_bar
+    for i in range(_START_BAR, len(df) - 1):
+        if in_position or i < skip_until_bar:
             continue
 
         sub = df.iloc[: i + 1].copy()
-
         macro_trend = trend_filter_ema(sub)
         rsi14 = float(sub["rsi14"].iloc[-1])
         is_vol_spike = bool(volume_spike(sub, length=20, multiplier=1.5))
         last_close = float(sub["close"].iloc[-1])
 
-        pivots = find_fractal_pivots(sub)
-        pivots = filter_pivots(pivots, min_pct_move=min_pct_move)
-        if len(pivots) < 4:
-            continue
-
-        scenarios = build_scenarios(pivots, macro_trend=macro_trend, rsi14=rsi14, volume_spike=is_vol_spike)
+        scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
         if not scenarios:
             continue
-
-        regime = detect_market_regime(sub)
-        macro_bias = compute_macro_bias(regime, rsi14=rsi14)
-        gated = []
-        for sc in scenarios:
-            r = apply_context_gate(sc, macro_bias=macro_bias, min_confidence=55.0)
-            if r:
-                gated.append(r)
-        if not gated:
-            continue
-        scenarios = gated
 
         sc = scenarios[0]
         direction = sc["direction"]
 
+        # filters
         if not allow_direction(macro_trend, direction):
             continue
         if direction == "LONG" and rsi14 < 50:
@@ -1691,18 +1854,16 @@ def backtest_symbol_trades(
 
         entry = float(trade_plan["entry"])
 
-        # close confirm
-        triggered = False
-        if direction == "LONG" and last_close > entry:
-            triggered = True
-        if direction == "SHORT" and last_close < entry:
-            triggered = True
+        triggered = (
+            (direction == "LONG" and last_close > entry)
+            or (direction == "SHORT" and last_close < entry)
+        )
         if not triggered:
             continue
 
         in_position = True
-
         start_i = i + 1
+
         sim = _simulate_one_trade(
             df=df,
             start_i=start_i,
@@ -1714,16 +1875,15 @@ def backtest_symbol_trades(
             tp3=float(trade_plan["tp3"]),
         )
 
-        # หา exit index/time จาก bars ที่คืนมา
-        exit_index = None
+        # exit time
+        exit_index: Optional[int] = None
         exit_time = None
         if sim["result"] in ("WIN", "LOSS"):
             exit_index = start_i + int(sim["bars"])
             if 0 <= exit_index < len(df):
                 exit_time = df["open_time"].iloc[exit_index]
 
-        entry_time = df["open_time"].iloc[i]  # วันที่ trigger (แท่งที่ปิดยืนยัน)
-
+        entry_time = df["open_time"].iloc[i]
         r = _r_multiple(direction, entry, float(trade_plan["sl"]), float(trade_plan["tp3"]), sim["result"])
 
         trades.append({
@@ -1741,7 +1901,6 @@ def backtest_symbol_trades(
             "r_multiple": r,
         })
 
-        # ✅ set skip_until_bar กรณี OPEN
         if sim["result"] in ("WIN", "LOSS"):
             in_position = False
         else:
@@ -1750,6 +1909,10 @@ def backtest_symbol_trades(
 
     return {"symbol": symbol, "trades": trades}
 
+
+# ---------------------------------------------------------------------------
+# portfolio_simulator
+# ---------------------------------------------------------------------------
 
 def portfolio_simulator(
     symbols: List[str],
@@ -1760,11 +1923,10 @@ def portfolio_simulator(
     min_confidence: float = 60.0,
 ) -> Dict:
     """
-    Portfolio simulator แบบง่าย:
-    - รวมเทรดของทุกเหรียญ (filtered ด้วย min_confidence)
-    - จัดเรียงตาม entry_time
-    - คิด equity เป็นผลรวม R (1R ต่อเทรด)
-    - คำนวณ Max Drawdown จาก equity curve
+    Portfolio simulator:
+    - รวมเทรดของทุกเหรียญ filtered ด้วย min_confidence
+    - sort ตาม entry_time (✅ FIX: กัน NaT crash)
+    - คิด equity R + Max Drawdown
     """
     all_trades: List[Dict] = []
 
@@ -1779,12 +1941,8 @@ def portfolio_simulator(
         )
         all_trades.extend(res["trades"])
 
-    # เรียงตามเวลาเข้า
-    all_trades.sort(key=lambda x: x["entry_time"])
-
-    equity = 0.0
-    peak = 0.0
-    max_dd = 0.0
+    # ✅ FIX: ใช้ _safe_entry_time กัน NaT/None TypeError ตอน sort
+    all_trades.sort(key=_safe_entry_time)
 
     closed = [t for t in all_trades if t["result"] in ("WIN", "LOSS")]
     wins = sum(1 for t in closed if t["result"] == "WIN")
@@ -1792,7 +1950,11 @@ def portfolio_simulator(
     total = len(closed)
     winrate = round((wins / total) * 100, 2) if total > 0 else 0.0
 
-    curve = []
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    curve: List[float] = []
+
     for t in closed:
         equity += float(t["r_multiple"])
         peak = max(peak, equity)
@@ -1812,76 +1974,20 @@ def portfolio_simulator(
     }
 
 
+# ---------------------------------------------------------------------------
+# __main__
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
-    # ✅ ชุดที่แนะนำจากผล backtest ของคุณ
+    logging.basicConfig(level=logging.INFO)
+
     symbols = ["BTCUSDT", "XRPUSDT", "ADAUSDT", "BNBUSDT", "TRXUSDT", "DOGEUSDT"]
 
-    # Portfolio (conf>=60)
     res = portfolio_simulator(symbols, interval="1d", limit=1000, min_confidence=60)
     print(res)
 
-    # เผื่ออยากดูเข้มขึ้น
     res2 = portfolio_simulator(symbols, interval="1d", limit=1000, min_confidence=70)
     print(res2)
-===== app/config/settings.py =====
-from zoneinfo import ZoneInfo
-
-# ==============================
-# TIMEFRAME CONFIG
-# ==============================
-
-TIMEFRAME = "1d"
-BARS = 1000
-TIMEZONE = ZoneInfo("Asia/Bangkok")
-RUN_HOUR = 20
-RUN_MINUTE = 0
-
-# ==============================
-# SYMBOL UNIVERSE (20)
-# ==============================
-
-SYMBOLS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "BNBUSDT",
-    "SOLUSDT",
-    "XRPUSDT",
-    "ADAUSDT",
-    "DOGEUSDT",
-    "TRXUSDT",
-    "TONUSDT",
-    "AVAXUSDT",
-    "DOTUSDT",
-    "LINKUSDT",
-    "LTCUSDT",
-    "ATOMUSDT",
-    "UNIUSDT",
-    "NEARUSDT",
-    "APTUSDT",
-    "ICPUSDT",
-    "FILUSDT",
-    "ARBUSDT",
-]
-
-# ==============================
-# PIVOT SETTINGS
-# ==============================
-
-FRACTAL_LEFT = 2
-FRACTAL_RIGHT = 2
-
-# ==============================
-# SCENARIO SETTINGS
-# ==============================
-
-MAX_SCENARIOS = 3
-MIN_RR = 2.0
-
-# ==============================
-# RETRY SETTINGS
-# ==============================
-
-MAX_RETRY = 3
 ===== app/config/wave_settings.py =====
 from zoneinfo import ZoneInfo
 
@@ -2074,8 +2180,6 @@ def add_rsi(df: pd.DataFrame, length: int = 14) -> pd.DataFrame:
     out[f"rsi{length}"] = rsi(out["close"], length)
     return out
     
-===== app/indicators/structure.py =====
-
 ===== app/indicators/trend_filter.py =====
 import pandas as pd
 
@@ -2153,20 +2257,29 @@ def volume_spike(df: pd.DataFrame, length: int = 20, multiplier: float = 1.5) ->
 import sys
 from dotenv import load_dotenv
 load_dotenv()
-from app.scheduler.daily_wave_scheduler import (
-    start_scheduler_loop,
-    run_daily_wave_job,
-)
+
+from flask import Flask
+from app.scheduler.daily_wave_scheduler import run_daily_wave_job
+
+app = Flask(__name__)
+
+@app.route("/")
+def health():
+    return "OK", 200
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "run":
         print("Manual Run Mode...")
         run_daily_wave_job()
     else:
-        start_scheduler_loop()
+        # Railway ต้องการ HTTP server สำหรับ healthcheck
+        app.run(host="0.0.0.0", port=8080)
 ===== app/risk/__init__.py =====
 
 ===== app/risk/risk_manager.py =====
+from __future__ import annotations
+
 from typing import Dict
 
 
@@ -2174,7 +2287,7 @@ def calculate_rr(entry: float, sl: float, tp: float) -> float:
     risk = abs(entry - sl)
     reward = abs(tp - entry)
     if risk == 0:
-        return 0
+        return 0.0
     return reward / risk
 
 
@@ -2186,8 +2299,7 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
     """
 
     stype = (scenario.get("type") or "").upper()
-    direction = scenario["direction"]
-    pivots = scenario["pivots"]
+    direction = (scenario.get("direction") or "").upper()
 
     trade = {
         "direction": direction,
@@ -2201,27 +2313,38 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
     }
 
     # =========================
-    # ABC (Wave C projection)
-    # Pattern:
-    #   ABC_DOWN: H0-L1-H2-L3  (A: H0->L1, B: ->H2, C: project down from H2)
-    #   ABC_UP  : L0-H1-L2-H3  (A: L0->H1, B: ->L2, C: project up from L2)
+    # SIDEWAY_RANGE
     # =========================
-    if stype == "ABC_DOWN":
-        # pivots = [H0, L1, H2, L3]
-        h0 = float(pivots[0]["price"])
-        l1 = float(pivots[1]["price"])
-        h2 = float(pivots[2]["price"])
+    if stype == "SIDEWAY_RANGE":
+        range_low = float(scenario.get("range_low") or 0)
+        range_high = float(scenario.get("range_high") or 0)
+        atr = float(scenario.get("atr") or current_price * 0.01)
 
-        a_len = abs(h0 - l1)  # ความยาว wave A
-        entry = l1            # trigger: ปิดต่ำกว่า L1
-        sl = h2               # invalidation: ปิดเหนือ H2
+        if range_low <= 0 or range_high <= range_low:
+            trade["reason"] = "SIDEWAY: range ไม่ valid"
+            return trade
 
-        tp1 = h2 - (a_len * 1.0)
-        tp2 = h2 - (a_len * 1.618)
-        tp3 = h2 - (a_len * 2.0)
+        span = range_high - range_low
+
+        if direction == "LONG":
+            entry = float(current_price)
+            sl = range_low - atr * 0.5
+            tp1 = range_low + span * 0.382
+            tp2 = range_low + span * 0.618
+            tp3 = range_high - atr * 0.3
+
+        elif direction == "SHORT":
+            entry = float(current_price)
+            sl = range_high + atr * 0.5
+            tp1 = range_high - span * 0.382
+            tp2 = range_high - span * 0.618
+            tp3 = range_low + atr * 0.3
+
+        else:
+            trade["reason"] = "SIDEWAY: direction ไม่ถูกต้อง"
+            return trade
 
         rr = calculate_rr(entry, sl, tp2)
-
         if rr >= min_rr:
             trade.update({
                 "entry": entry,
@@ -2230,29 +2353,65 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
                 "tp2": tp2,
                 "tp3": tp3,
                 "valid": True,
-                "reason": f"RR={round(rr,2)} ≥ {min_rr}",
+                "reason": f"RR={round(rr, 2)} ≥ {min_rr}",
             })
         else:
-            trade["reason"] = f"RR ต่ำ ({round(rr,2)})"
+            trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
 
         return trade
 
-    if stype == "ABC_UP":
-        # pivots = [L0, H1, L2, H3]
+    # =========================
+    # ABC (Wave C projection)
+    # =========================
+    if stype in ("ABC_DOWN", "ABC_UP"):
+        pivots = scenario.get("pivots") or []
+        if len(pivots) < 3:
+            trade["reason"] = "ABC: pivots ไม่พอ"
+            return trade
+
+        if stype == "ABC_DOWN":
+            h0 = float(pivots[0]["price"])
+            l1 = float(pivots[1]["price"])
+            h2 = float(pivots[2]["price"])
+
+            a_len = abs(h0 - l1)
+            entry = l1            # trigger: ปิดต่ำกว่า L1
+            sl = h2               # invalidation: ปิดเหนือ H2
+
+            tp1 = entry - (a_len * 1.0)
+            tp2 = entry - (a_len * 1.618)
+            tp3 = entry - (a_len * 2.0)
+
+            rr = calculate_rr(entry, sl, tp2)
+            if rr >= min_rr:
+                trade.update({
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": tp3,
+                    "valid": True,
+                    "reason": f"RR={round(rr, 2)} ≥ {min_rr}",
+                })
+            else:
+                trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
+
+            return trade
+
+        # ABC_UP
         l0 = float(pivots[0]["price"])
         h1 = float(pivots[1]["price"])
         l2 = float(pivots[2]["price"])
 
-        a_len = abs(h1 - l0)  # ความยาว wave A
-        entry = h1            # trigger: ปิดเหนือ H1
-        sl = l2               # invalidation: ปิดต่ำกว่า L2
+        a_len = abs(h1 - l0)
+        entry = h1              # trigger: ปิดเหนือ H1
+        sl = l2                 # invalidation: ปิดต่ำกว่า L2
 
-        tp1 = l2 + (a_len * 1.0)
-        tp2 = l2 + (a_len * 1.618)
-        tp3 = l2 + (a_len * 2.0)
+        tp1 = entry + (a_len * 1.0)
+        tp2 = entry + (a_len * 1.618)
+        tp3 = entry + (a_len * 2.0)
 
         rr = calculate_rr(entry, sl, tp2)
-
         if rr >= min_rr:
             trade.update({
                 "entry": entry,
@@ -2261,35 +2420,40 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
                 "tp2": tp2,
                 "tp3": tp3,
                 "valid": True,
-                "reason": f"RR={round(rr,2)} ≥ {min_rr}",
+                "reason": f"RR={round(rr, 2)} ≥ {min_rr}",
             })
         else:
-            trade["reason"] = f"RR ต่ำ ({round(rr,2)})"
+            trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
 
         return trade
 
     # =========================
-    # Impulse (คงแบบเดิมก่อน)
+    # IMPULSE (LONG / SHORT)
     # =========================
-    # ใช้ pivot ล่าสุดเป็น trigger แบบง่าย: breakout = pivot ล่าสุด
+    pivots = scenario.get("pivots") or []
+    if len(pivots) < 2:
+        trade["reason"] = "IMPULSE: pivots ไม่พอ"
+        return trade
+
     breakout = float(pivots[-1]["price"])
     sl = float(pivots[-2]["price"])
     entry = breakout
 
-    # TP แบบง่าย: ใช้ความยาวช่วงแรกสุดเป็นฐาน
     base_len = abs(float(pivots[1]["price"]) - float(pivots[0]["price"]))
 
     if direction == "LONG":
         tp1 = entry + base_len * 1.0
         tp2 = entry + base_len * 1.618
         tp3 = entry + base_len * 2.0
-    else:
+    elif direction == "SHORT":
         tp1 = entry - base_len * 1.0
         tp2 = entry - base_len * 1.618
         tp3 = entry - base_len * 2.0
+    else:
+        trade["reason"] = "IMPULSE: direction ไม่ถูกต้อง"
+        return trade
 
     rr = calculate_rr(entry, sl, tp2)
-
     if rr >= min_rr:
         trade.update({
             "entry": entry,
@@ -2298,10 +2462,10 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
             "tp2": tp2,
             "tp3": tp3,
             "valid": True,
-            "reason": f"RR={round(rr,2)} ≥ {min_rr}",
+            "reason": f"RR={round(rr, 2)} ≥ {min_rr}",
         })
     else:
-        trade["reason"] = f"RR ต่ำ ({round(rr,2)})"
+        trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
 
     return trade
 ===== app/scheduler/__init__.py =====
@@ -2323,118 +2487,100 @@ from app.state.position_manager import get_active, lock_new_position, update_fro
 from app.config.wave_settings import TIMEFRAME
 from app.services.telegram_reporter import format_symbol_report, send_message
 
-MIN_CONFIDENCE = 60
-
-def _has_triggered_signal(analysis: dict) -> bool:
-    scenarios = analysis.get("scenarios", []) or []
-
-    for sc in scenarios:
-        trade = sc.get("trade_plan", {}) or {}
-        conf = float(sc.get("confidence") or 0)
-
-        # 1) ต้อง confidence ผ่านเกณฑ์
-        if conf < MIN_CONFIDENCE:
-            continue
-
-        # 2) ต้อง valid + triggered
-        if not trade.get("valid"):
-            continue
-
-        if trade.get("triggered") is not True:
-            continue
-
-        # 3) RR ต้อง >= 2 (กันไม้ขยะ)
-        entry = float(trade.get("entry") or 0)
-        sl = float(trade.get("sl") or 0)
-        tp3 = float(trade.get("tp3") or 0)
-
-        risk = abs(entry - sl)
-        reward = abs(tp3 - entry)
-
-        if risk <= 0:
-            continue
-
-        rr = reward / risk
-        if rr < 2.0:
-            continue
-
-        return True
-
-    return False
-
 def run_daily_wave_job():
-    """
-    วิเคราะห์ครบ 20 เหรียญ แล้วส่ง TG เหรียญละ 1 ข้อความ
-    """
+    print(f"=== START DAILY WAVE JOB | tf={TIMEFRAME} | symbols={len(SYMBOLS)} ===", flush=True)
+
+    found = 0
+    found_symbols = []
+    errors = 0
 
     for symbol in SYMBOLS:
+        print(f"[{symbol}] start", flush=True)
         retry = 0
 
         while retry < MAX_RETRY:
             try:
                 analysis = analyze_symbol(symbol)
-
                 if not analysis:
+                    print(f"[{symbol}] no analysis -> skip", flush=True)
                     break
 
-                # 1) ถ้ามี position ACTIVE -> อัปเดตสถานะ แล้วข้ามการสร้างสัญญาณใหม่
                 active = get_active(symbol, TIMEFRAME)
                 if active:
-                    pos, events = update_from_price(symbol, TIMEFRAME, float(analysis["price"]))
-
-                    # แจ้งเฉพาะ event ใหม่
-                    if events.get("tp1") or events.get("tp2") or events.get("tp3") or events.get("sl") or events.get("closed"):
-                        lines = []
-                        lines.append(f"{symbol} — UPDATE ({TIMEFRAME.upper()})")
-                        lines.append(f"ราคา: {analysis['price']}")
-                        lines.append(f"สถานะ: {pos.status} | ทิศทาง: {pos.direction}")
-                        if events.get("tp1"):
-                            lines.append("✅ TP1 HIT")
-                        if events.get("tp2"):
-                            lines.append("✅ TP2 HIT")
-                        if events.get("tp3"):
-                            lines.append("✅ TP3 HIT")
-                        if events.get("sl"):
-                            lines.append("⛔ SL HIT")
-                        if events.get("closed"):
-                            lines.append(f"🔒 CLOSED: {events.get('closed_reason')}")
-
-                        send_message("\n".join(lines))
-
+                    pos, events = update_from_price(
+                        symbol,
+                        TIMEFRAME,
+                        float(analysis["price"])
+                    )
                     break
 
-                # 2) ไม่มี ACTIVE -> ส่งเฉพาะ TRIGGERED และ lock ก่อนส่ง
                 scenarios = analysis.get("scenarios", []) or []
+                sent = False
+
                 for sc in scenarios:
                     trade = sc.get("trade_plan", {}) or {}
-                    if trade.get("valid") and trade.get("triggered") is True:
-                        # lock กันทับ/ซ้อน
-                        lock_new_position(
-                            symbol=symbol,
-                            timeframe=TIMEFRAME,
-                            direction=sc.get("direction", ""),
-                            trade_plan=trade,
-                        )
-                        text = format_symbol_report(analysis)
-                        send_message(text)
-                        break
+
+                    if not trade.get("valid"):
+                        continue
+
+                    if trade.get("triggered") is not True:
+                        continue
+
+                    ok = lock_new_position(
+                        symbol=symbol,
+                        timeframe=TIMEFRAME,
+                        direction=sc.get("direction", ""),
+                        trade_plan=trade,
+                    )
+
+                    if not ok:
+                        continue
+
+                    text = format_symbol_report(analysis)
+                    send_message(text)
+
+                    print(f"[{symbol}] SENT signal", flush=True)
+
+                    found += 1
+                    found_symbols.append(symbol)
+                    sent = True
+                    break
+
+                if not sent:
+                    wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
+                    print(
+                        f"[{symbol}] no triggered signal | "
+                        f"wave={wl.get('pattern')} "
+                        f"{wl.get('direction')} "
+                        f"conf={wl.get('confidence')}",
+                        flush=True
+                    )
 
                 break
 
             except Exception as e:
                 retry += 1
+                print(f"[{symbol}] ERROR retry={retry}/{MAX_RETRY}: {e}", flush=True)
                 if retry >= MAX_RETRY:
-                    error_text = (
-                        f"{symbol} — ERROR หลัง retry {MAX_RETRY} ครั้ง\n"
-                        f"{str(e)}"
-                    )
-                    try:
-                        send_message(error_text)
-                    except:
-                        pass
-
+                    errors += 1
+                    break
                 time.sleep(2)
 
+    # ✅ สรุปเช้า: เจอ/ไม่เจอ
+    summary = []
+    summary.append(f"🕖 DAILY SUMMARY ({TIMEFRAME.upper()})")
+    summary.append(f"สแกน: {len(SYMBOLS)} เหรียญ")
+    summary.append(f"พบสัญญาณ: {found} เหรียญ")
+    summary.append(f"ไม่พบสัญญาณ: {len(SYMBOLS) - found} เหรียญ")
+    if found_symbols:
+        summary.append("รายการที่พบ: " + ", ".join(found_symbols))
+    if errors:
+        summary.append(f"⚠️ errors: {errors}")
+
+    send_message("\n".join(summary))
+
+    print("=== END DAILY WAVE JOB ===", flush=True)
+    
 def start_scheduler_loop():
     """
     Loop เช็คเวลา 20:00 ไทย แล้วรันวันละครั้ง
@@ -2612,14 +2758,21 @@ def get_active(symbol: str, timeframe: str) -> Optional[Position]:
     return None
 
 
-def lock_new_position(symbol: str, timeframe: str, direction: str, trade_plan: Dict) -> Position:
+def lock_new_position(symbol: str, timeframe: str, direction: str, trade_plan: Dict) -> bool:
     """
     Create ACTIVE position and persist immediately.
-    Assumes trade_plan has entry/sl/tp1/tp2/tp3 (floats).
+    Return:
+        True  -> เปิดสำเร็จ
+        False -> มี ACTIVE อยู่แล้ว
     """
     state = _load_state()
     positions = state.setdefault("positions", {})
     k = _key(symbol, timeframe)
+
+    # ✅ กันเปิดซ้ำ
+    raw = positions.get(k)
+    if raw and raw.get("status") == "ACTIVE":
+        return False
 
     pos = Position(
         symbol=symbol,
@@ -2636,15 +2789,13 @@ def lock_new_position(symbol: str, timeframe: str, direction: str, trade_plan: D
 
     positions[k] = asdict(pos)
     _save_state(state)
-    return pos
+    return True
 
 
 def update_from_price(symbol: str, timeframe: str, price: float) -> Tuple[Optional[Position], Dict]:
     """
     Update TP/SL hits based on current price.
     Returns: (position, events)
-      events: {"tp1":bool,"tp2":bool,"tp3":bool,"sl":bool,"closed":bool,"closed_reason":str}
-    Unlock only when SL hit OR TP3 hit -> CLOSED.
     """
     state = _load_state()
     positions = state.get("positions") or {}
@@ -2661,7 +2812,6 @@ def update_from_price(symbol: str, timeframe: str, price: float) -> Tuple[Option
 
     events = {"tp1": False, "tp2": False, "tp3": False, "sl": False, "closed": False, "closed_reason": ""}
 
-    # LONG
     if pos.direction == "LONG":
         if (not pos.tp1_hit) and p >= pos.tp1:
             pos.tp1_hit = True
@@ -2675,8 +2825,6 @@ def update_from_price(symbol: str, timeframe: str, price: float) -> Tuple[Option
         if (not pos.sl_hit) and p <= pos.sl:
             pos.sl_hit = True
             events["sl"] = True
-
-    # SHORT
     else:
         if (not pos.tp1_hit) and p <= pos.tp1:
             pos.tp1_hit = True
@@ -2691,7 +2839,6 @@ def update_from_price(symbol: str, timeframe: str, price: float) -> Tuple[Option
             pos.sl_hit = True
             events["sl"] = True
 
-    # Close condition (STRICT)
     if pos.sl_hit and pos.status == "ACTIVE":
         pos.status = "CLOSED"
         pos.closed_at = _now_iso()

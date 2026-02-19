@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
+
+from app.analysis.fib import fib_extension
 
 
 def calculate_rr(entry: float, sl: float, tp: float) -> float:
     risk = abs(entry - sl)
     reward = abs(tp - entry)
     if risk == 0:
-        return 0
+        return 0.0
     return reward / risk
 
 
-def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) -> Dict:
-    """
-    Build entry / SL / TP based on scenario
-    Close-confirm style:
-      - Entry = breakout trigger level (ยังไม่ถือว่าเข้า จนกว่าจะปิดแท่งยืนยัน)
-    """
-
+def build_trade_plan(
+    scenario: Dict,
+    current_price: float,
+    min_rr: float = 2.0,
+    sr: Optional[Dict] = None,
+) -> Dict:
     stype = (scenario.get("type") or "").upper()
     direction = (scenario.get("direction") or "").upper()
 
@@ -34,8 +35,6 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
 
     # =========================
     # SIDEWAY_RANGE
-    # ✅ FIX: กัน KeyError เมื่อ scenario ไม่มี pivots
-    #    ใช้ range_low/range_high/atr ที่ผ่านมาใน scenario dict
     # =========================
     if stype == "SIDEWAY_RANGE":
         range_low = float(scenario.get("range_low") or 0)
@@ -49,19 +48,17 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
         span = range_high - range_low
 
         if direction == "LONG":
-            entry = current_price
-            sl    = range_low - atr * 0.5          # ใต้ support + buffer ATR
-            tp1   = range_low + span * 0.382
-            tp2   = range_low + span * 0.618
-            tp3   = range_high - atr * 0.3          # ใกล้ resist แต่ไม่ชน
-
+            entry = float(current_price)
+            sl = range_low - atr * 0.5
+            tp1 = range_low + span * 0.382
+            tp2 = range_low + span * 0.618
+            tp3 = range_high - atr * 0.3
         elif direction == "SHORT":
-            entry = current_price
-            sl    = range_high + atr * 0.5          # เหนือ resist + buffer ATR
-            tp1   = range_high - span * 0.382
-            tp2   = range_high - span * 0.618
-            tp3   = range_low + atr * 0.3           # ใกล้ support แต่ไม่ชน
-
+            entry = float(current_price)
+            sl = range_high + atr * 0.5
+            tp1 = range_high - span * 0.382
+            tp2 = range_high - span * 0.618
+            tp3 = range_low + atr * 0.3
         else:
             trade["reason"] = "SIDEWAY: direction ไม่ถูกต้อง"
             return trade
@@ -79,14 +76,10 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
             })
         else:
             trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
-
         return trade
 
     # =========================
     # ABC (Wave C projection)
-    # Pattern:
-    #   ABC_DOWN : H0-L1-H2-L3  → SHORT เมื่อปิดต่ำกว่า L1
-    #   ABC_UP   : L0-H1-L2-H3  → LONG เมื่อปิดเหนือ H1
     # =========================
     if stype in ("ABC_DOWN", "ABC_UP"):
         pivots = scenario.get("pivots") or []
@@ -94,55 +87,64 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
             trade["reason"] = "ABC: pivots ไม่พอ"
             return trade
 
-    if stype == "ABC_DOWN":
-        h0 = float(pivots[0]["price"])
-        l1 = float(pivots[1]["price"])
-        h2 = float(pivots[2]["price"])
+        if stype == "ABC_DOWN":
+            h0 = float(pivots[0]["price"])
+            l1 = float(pivots[1]["price"])
+            h2 = float(pivots[2]["price"])
 
-        a_len = abs(h0 - l1)   # ความยาว wave A
-        entry = l1              # trigger: ปิดต่ำกว่า L1
-        sl    = h2              # invalidation: ปิดเหนือ H2
+            a_len = abs(h0 - l1)
+            entry = l1
+            sl = h2
 
-        # ✅ FIX: project TP จาก entry (l1) ไม่ใช่ h2
-        # เดิม project จาก h2 ทำให้ tp1 อาจอยู่เหนือ entry ได้เมื่อ B retrace ลึก
-        tp1 = entry - (a_len * 1.0)
-        tp2 = entry - (a_len * 1.618)
-        tp3 = entry - (a_len * 2.0)
+            # ใช้ fib_extension คำนวณ target จริง
+            fib_targets = fib_extension(h0, l1, h2)
+            tp1 = fib_targets["1.0"]
+            tp2 = fib_targets["1.618"]
+            tp3 = fib_targets["2.0"]
 
-        rr = calculate_rr(entry, sl, tp2)
+            # ถ้ามี sr resist ใกล้กว่า sl -> ปรับ sl ให้แน่นขึ้น
+            if sr:
+                resist = (sr.get("resist") or {}).get("level")
+                if resist and float(resist) < sl:
+                    sl = float(resist)
 
-        if rr >= min_rr:
-            trade.update({
-                "entry": entry,
-                "sl": sl,
-                "tp1": tp1,
-                "tp2": tp2,
-                "tp3": tp3,
-                "valid": True,
-                "reason": f"RR={round(rr, 2)} ≥ {min_rr}",
-            })
-        else:
-            trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
+            rr = calculate_rr(entry, sl, tp2)
+            if rr >= min_rr:
+                trade.update({
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": tp3,
+                    "valid": True,
+                    "reason": f"RR={round(rr, 2)} ≥ {min_rr} (fib+sr)",
+                })
+            else:
+                trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
+            return trade
 
-        return trade
-
-    if stype == "ABC_UP":
+        # ABC_UP
         l0 = float(pivots[0]["price"])
         h1 = float(pivots[1]["price"])
         l2 = float(pivots[2]["price"])
 
-        a_len = abs(h1 - l0)   # ความยาว wave A
-        entry = h1              # trigger: ปิดเหนือ H1
-        sl    = l2              # invalidation: ปิดต่ำกว่า L2
+        a_len = abs(h1 - l0)
+        entry = h1
+        sl = l2
 
-        # ✅ FIX: project TP จาก entry (h1) ไม่ใช่ l2
-        # เดิม project จาก l2 ทำให้ tp1 อาจอยู่ใต้ entry ได้เมื่อ B retrace ตื้น
-        tp1 = entry + (a_len * 1.0)
-        tp2 = entry + (a_len * 1.618)
-        tp3 = entry + (a_len * 2.0)
+        # ใช้ fib_extension คำนวณ target จริง
+        fib_targets = fib_extension(l0, h1, l2)
+        tp1 = fib_targets["1.0"]
+        tp2 = fib_targets["1.618"]
+        tp3 = fib_targets["2.0"]
+
+        # ถ้ามี sr support ใกล้กว่า sl -> ปรับ sl ให้แน่นขึ้น
+        if sr:
+            support = (sr.get("support") or {}).get("level")
+            if support and float(support) > sl:
+                sl = float(support)
 
         rr = calculate_rr(entry, sl, tp2)
-
         if rr >= min_rr:
             trade.update({
                 "entry": entry,
@@ -151,16 +153,14 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
                 "tp2": tp2,
                 "tp3": tp3,
                 "valid": True,
-                "reason": f"RR={round(rr, 2)} ≥ {min_rr}",
+                "reason": f"RR={round(rr, 2)} ≥ {min_rr} (fib+sr)",
             })
         else:
             trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
-
         return trade
 
     # =========================
-    # Impulse (LONG / SHORT)
-    # ใช้ pivot ล่าสุดเป็น breakout trigger
+    # IMPULSE (LONG / SHORT)
     # =========================
     pivots = scenario.get("pivots") or []
     if len(pivots) < 2:
@@ -168,23 +168,46 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
         return trade
 
     breakout = float(pivots[-1]["price"])
-    sl       = float(pivots[-2]["price"])
-    entry    = breakout
+    sl = float(pivots[-2]["price"])
+    entry = breakout
 
-    # TP ใช้ความยาวช่วงแรกสุดเป็นฐาน
-    base_len = abs(float(pivots[1]["price"]) - float(pivots[0]["price"]))
+    # ใช้ fib_extension คำนวณ TP จาก wave 1 (p0->p1) ต่อจาก entry
+    p0 = float(pivots[0]["price"])
+    p1 = float(pivots[1]["price"])
+    fib_targets = fib_extension(p0, p1, entry)
 
     if direction == "LONG":
-        tp1 = entry + base_len * 1.0
-        tp2 = entry + base_len * 1.618
-        tp3 = entry + base_len * 2.0
-    else:  # SHORT
+        tp1 = fib_targets["1.0"]
+        tp2 = fib_targets["1.618"]
+        tp3 = fib_targets["2.0"]
+
+        # ปรับ SL โดยใช้ sr support ถ้าอยู่เหนือ sl เดิม (แน่นขึ้น)
+        if sr:
+            support = (sr.get("support") or {}).get("level")
+            if support and float(support) > sl:
+                sl = float(support)
+
+    elif direction == "SHORT":
+        tp1 = fib_targets["1.0"]
+        tp2 = fib_targets["1.618"]
+        tp3 = fib_targets["2.0"]
+
+        # SHORT: fib_extension ออกทางลง ต้องกลับทิศ
+        base_len = abs(p1 - p0)
         tp1 = entry - base_len * 1.0
         tp2 = entry - base_len * 1.618
         tp3 = entry - base_len * 2.0
 
-    rr = calculate_rr(entry, sl, tp2)
+        # ปรับ SL โดยใช้ sr resist ถ้าอยู่ต่ำกว่า sl เดิม (แน่นขึ้น)
+        if sr:
+            resist = (sr.get("resist") or {}).get("level")
+            if resist and float(resist) < sl:
+                sl = float(resist)
+    else:
+        trade["reason"] = "IMPULSE: direction ไม่ถูกต้อง"
+        return trade
 
+    rr = calculate_rr(entry, sl, tp2)
     if rr >= min_rr:
         trade.update({
             "entry": entry,
@@ -193,7 +216,7 @@ def build_trade_plan(scenario: Dict, current_price: float, min_rr: float = 2.0) 
             "tp2": tp2,
             "tp3": tp3,
             "valid": True,
-            "reason": f"RR={round(rr, 2)} ≥ {min_rr}",
+            "reason": f"RR={round(rr, 2)} ≥ {min_rr} (fib+sr)",
         })
     else:
         trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"

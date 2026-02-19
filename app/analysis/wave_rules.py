@@ -1,4 +1,5 @@
 from typing import Dict, List, Tuple
+from app.analysis.fib import fib_retracement, fib_extension, fib_zone_match
 
 
 def _is_alternating_types(points: List[Dict]) -> bool:
@@ -85,11 +86,12 @@ def validate_impulse(points: List[Dict], direction: str) -> Tuple[bool, List[str
     if wave1_len == 0:
         reasons.append("Wave1 length = 0 (คำนวณ Fib ไม่ได้)")
     else:
-        wave2_retrace = abs((_price(points, 2) - _price(points, 1)) / wave1_len)
-        if not (0.382 <= wave2_retrace <= 0.786):
+        wave2_retrace = fib_retracement(_price(points, 0), _price(points, 1), _price(points, 2))
+        if wave2_retrace is None or not fib_zone_match(wave2_retrace):
             reasons.append("Wave2 retrace ไม่อยู่ในช่วง 0.382–0.786")
 
         # Wave3 extension
+        wave3_targets = fib_extension(_price(points, 0), _price(points, 1), _price(points, 2))
         wave3_ext = w3 / abs(wave1_len)
         if wave3_ext < 1.0:
             reasons.append("Wave3 extension < 1.0 (อ่อนเกิน)")
@@ -168,33 +170,4 @@ def validate_abc(points: List[Dict], direction: str) -> Tuple[bool, List[str]]:
         reasons.append("ABC: Wave C สั้นกว่า A (อ่อน)")
     elif c_ext >= 1.618:
         reasons.append("ABC: Wave C ยืดแรง (>=1.618)")
-
     return True, reasons
-
-def invalidation_level_for_entry(entry_type: str, pivots: Dict) -> float:
-    """
-    Return invalidation price (SL reference) based on chosen entry type.
-    entry_type: "W2_LONG", "W4_LONG", "W2_SHORT", "W4_SHORT", "C_LONG", "C_SHORT"
-    pivots: dict containing required pivot prices (keys depend on entry_type)
-    """
-    t = (entry_type or "").upper().strip()
-
-    # Wave 2 entries
-    if t == "W2_LONG":
-        return float(pivots["wave1_start"])  # below this = invalid
-    if t == "W2_SHORT":
-        return float(pivots["wave1_start"])  # above this = invalid
-
-    # Wave 4 entries
-    if t == "W4_LONG":
-        return float(pivots["wave3_start"])
-    if t == "W4_SHORT":
-        return float(pivots["wave3_start"])
-
-    # Wave C entries (use B pivot as invalidation reference by default)
-    if t == "C_LONG":
-        return float(pivots["b_pivot"])
-    if t == "C_SHORT":
-        return float(pivots["b_pivot"])
-
-    raise KeyError(f"unknown entry_type: {entry_type}")

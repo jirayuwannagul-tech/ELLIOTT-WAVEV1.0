@@ -22,22 +22,8 @@ from app.analysis.context_gate import apply_context_gate
 from app.analysis.market_regime import detect_market_regime
 from app.analysis.macro_bias import compute_macro_bias
 from app.analysis.multi_tf import get_mtf_summary
-
-# NOTE: ไฟล์/โมดูลนี้อาจยังไม่ถูกสร้างในบาง branch
-# เพื่อกันระบบพัง ให้มี fallback แบบง่าย
-try:
-    from app.analysis.trend_detector import detect_market_mode  # type: ignore
-except Exception:
-
-    def detect_market_mode(df: pd.DataFrame) -> str:
-        """Fallback: ถ้าไม่มี trend_detector ให้ map จาก market_regime"""
-        try:
-            reg = (detect_market_regime(df) or {}).get("regime", "CHOP").upper()
-            if "SIDE" in reg or "RANGE" in reg:
-                return "SIDEWAY"
-            return "TREND"
-        except Exception:
-            return "TREND"
+from app.analysis.zones import build_zones_from_pivots, nearest_support_resist
+from app.analysis.trend_detector import detect_market_mode
 
 
 def _safe_float(x, default: float = 0.0) -> float:
@@ -45,7 +31,6 @@ def _safe_float(x, default: float = 0.0) -> float:
         return float(x)
     except Exception:
         return default
-
 
 def _range_levels(df: pd.DataFrame, lookback: int = 60) -> Dict:
     """คำนวณกรอบ sideway แบบง่ายจาก lookback ล่าสุด"""
@@ -114,12 +99,17 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
             "direction": "LONG",
             "probability": 0.0,
             "confidence": 65.0,
+            # ✅ ADD
+            "range_low": range_low,
+            "range_high": range_high,
+            "atr": atr,
             "reasons": [
                 f"Near range low ({range_low:,.2f})",
                 f"RSI14 low ({rsi14:.1f})",
             ],
         }
         plan = build_trade_plan(sc, current_price=price, min_rr=2.0)
+        plan["triggered"] = True
         sc["trade_plan"] = plan
         scenarios.append(sc)
 
@@ -131,12 +121,17 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
             "direction": "SHORT",
             "probability": 0.0,
             "confidence": 65.0,
+            # ✅ ADD
+            "range_low": range_low,
+            "range_high": range_high,
+            "atr": atr,
             "reasons": [
                 f"Near range high ({range_high:,.2f})",
                 f"RSI14 high ({rsi14:.1f})",
             ],
         }
         plan = build_trade_plan(sc, current_price=price, min_rr=2.0)
+        plan["triggered"] = True
         sc["trade_plan"] = plan
         scenarios.append(sc)
 
@@ -210,6 +205,10 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     pivots = filter_pivots(pivots, min_pct_move=1.5)
     wave_label = label_pivot_chain(pivots)
 
+    # 2.5) Build SR zones from pivots
+    zones = build_zones_from_pivots(df)
+    sr = nearest_support_resist(zones, price=current_price)
+
     if len(pivots) < 4:
         out = dict(base)
         out.update({
@@ -217,6 +216,8 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "message": "โครงสร้างยังไม่ชัด",
             "wave_label": wave_label,
             "sideway": None,
+        "zones": zones if zones else [],
+        "sr": sr if sr else {},
         })
         return out
 
@@ -237,7 +238,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         gated = apply_context_gate(
             scenario=sc,
             macro_bias=macro_bias,
-            min_confidence=55.0,
+            min_confidence=70.0,
         )
         if isinstance(gated, dict) and gated.get("direction"):
             gated_scenarios.append(gated)
@@ -269,24 +270,11 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         if not mtf_ok:
             continue
 
-        # Trend filter (1D macro)
-        if not allow_direction(macro_trend, direction):
-            continue
-
-        # RSI filter (1D momentum)
-        if direction == "LONG" and rsi14 < 50:
-            continue
-        if direction == "SHORT" and rsi14 > 50:
-            continue
-
-        # SNIPER FILTER
-        if float(scenario.get("confidence") or 0) < 70:
-            continue
-
         trade_plan = build_trade_plan(
             scenario,
             current_price=current_price,
             min_rr=float(MIN_RR) if MIN_RR else 3.0,
+            sr=sr,
         )
 
         # Close-confirm trigger
@@ -331,5 +319,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         "message": msg,
         "wave_label": wave_label,
         "sideway": None,
+        "zones": zones if zones else [],
+        "sr": sr if sr else {},
     })
     return out

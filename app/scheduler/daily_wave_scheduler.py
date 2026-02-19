@@ -14,42 +14,6 @@ from app.state.position_manager import get_active, lock_new_position, update_fro
 from app.config.wave_settings import TIMEFRAME
 from app.services.telegram_reporter import format_symbol_report, send_message
 
-MIN_CONF_REPORT = 60   # ส่งรายงานเฉพาะเหรียญที่ conf >= 60
-MIN_CONF_SIGNAL = 70   # ส่งสัญญาณ/ล็อคโพสิชัน เฉพาะ conf >= 70
-
-def _has_triggered_signal(analysis: dict) -> bool:
-    scenarios = analysis.get("scenarios", []) or []
-
-    for sc in scenarios:
-        trade = sc.get("trade_plan", {}) or {}
-        conf = float(sc.get("confidence") or 0)
-
-        if conf < MIN_CONF_SIGNAL:
-            continue
-
-        if not trade.get("valid"):
-            continue
-
-        if trade.get("triggered") is not True:
-            continue
-
-        entry = float(trade.get("entry") or 0)
-        sl = float(trade.get("sl") or 0)
-        tp3 = float(trade.get("tp3") or 0)
-
-        risk = abs(entry - sl)
-        reward = abs(tp3 - entry)
-        if risk <= 0:
-            continue
-
-        rr = reward / risk
-        if rr < 2.0:
-            continue
-
-        return True
-
-    return False
-
 def run_daily_wave_job():
     print(f"=== START DAILY WAVE JOB | tf={TIMEFRAME} | symbols={len(SYMBOLS)} ===", flush=True)
 
@@ -70,9 +34,11 @@ def run_daily_wave_job():
 
                 active = get_active(symbol, TIMEFRAME)
                 if active:
-                    # ✅ ACTIVE: ส่งอัปเดตทุกวัน (ตามที่คุย)
-                    pos, events = update_from_price(symbol, TIMEFRAME, float(analysis["price"]))
-                    # ... (บล็อค update ที่คุณทำไว้)
+                    pos, events = update_from_price(
+                        symbol,
+                        TIMEFRAME,
+                        float(analysis["price"])
+                    )
                     break
 
                 scenarios = analysis.get("scenarios", []) or []
@@ -80,29 +46,42 @@ def run_daily_wave_job():
 
                 for sc in scenarios:
                     trade = sc.get("trade_plan", {}) or {}
-                    conf = float(sc.get("confidence") or 0)
-                    if conf < MIN_CONF_SIGNAL:
+
+                    if not trade.get("valid"):
                         continue
 
-                    if trade.get("valid") and trade.get("triggered") is True:
-                        lock_new_position(
-                            symbol=symbol,
-                            timeframe=TIMEFRAME,
-                            direction=sc.get("direction", ""),
-                            trade_plan=trade,
-                        )
-                        text = format_symbol_report(analysis)
-                        send_message(text)  # ไปห้องเดียวกันผ่าน TELEGRAM_CHAT_ID
-                        print(f"[{symbol}] SENT signal", flush=True)
+                    if trade.get("triggered") is not True:
+                        continue
 
-                        found += 1
-                        found_symbols.append(symbol)
-                        sent = True
-                        break
+                    ok = lock_new_position(
+                        symbol=symbol,
+                        timeframe=TIMEFRAME,
+                        direction=sc.get("direction", ""),
+                        trade_plan=trade,
+                    )
+
+                    if not ok:
+                        continue
+
+                    text = format_symbol_report(analysis)
+                    send_message(text)
+
+                    print(f"[{symbol}] SENT signal", flush=True)
+
+                    found += 1
+                    found_symbols.append(symbol)
+                    sent = True
+                    break
 
                 if not sent:
                     wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
-                    print(f"[{symbol}] no triggered signal | wave={wl.get('pattern')} {wl.get('direction')} conf={wl.get('confidence')}", flush=True)
+                    print(
+                        f"[{symbol}] no triggered signal | "
+                        f"wave={wl.get('pattern')} "
+                        f"{wl.get('direction')} "
+                        f"conf={wl.get('confidence')}",
+                        flush=True
+                    )
 
                 break
 

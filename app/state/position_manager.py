@@ -60,14 +60,21 @@ def get_active(symbol: str, timeframe: str) -> Optional[Position]:
     return None
 
 
-def lock_new_position(symbol: str, timeframe: str, direction: str, trade_plan: Dict) -> Position:
+def lock_new_position(symbol: str, timeframe: str, direction: str, trade_plan: Dict) -> bool:
     """
     Create ACTIVE position and persist immediately.
-    Assumes trade_plan has entry/sl/tp1/tp2/tp3 (floats).
+    Return:
+        True  -> เปิดสำเร็จ
+        False -> มี ACTIVE อยู่แล้ว
     """
     state = _load_state()
     positions = state.setdefault("positions", {})
     k = _key(symbol, timeframe)
+
+    # ✅ กันเปิดซ้ำ
+    raw = positions.get(k)
+    if raw and raw.get("status") == "ACTIVE":
+        return False
 
     pos = Position(
         symbol=symbol,
@@ -84,15 +91,13 @@ def lock_new_position(symbol: str, timeframe: str, direction: str, trade_plan: D
 
     positions[k] = asdict(pos)
     _save_state(state)
-    return pos
+    return True
 
 
 def update_from_price(symbol: str, timeframe: str, price: float) -> Tuple[Optional[Position], Dict]:
     """
     Update TP/SL hits based on current price.
     Returns: (position, events)
-      events: {"tp1":bool,"tp2":bool,"tp3":bool,"sl":bool,"closed":bool,"closed_reason":str}
-    Unlock only when SL hit OR TP3 hit -> CLOSED.
     """
     state = _load_state()
     positions = state.get("positions") or {}
@@ -109,7 +114,6 @@ def update_from_price(symbol: str, timeframe: str, price: float) -> Tuple[Option
 
     events = {"tp1": False, "tp2": False, "tp3": False, "sl": False, "closed": False, "closed_reason": ""}
 
-    # LONG
     if pos.direction == "LONG":
         if (not pos.tp1_hit) and p >= pos.tp1:
             pos.tp1_hit = True
@@ -123,8 +127,6 @@ def update_from_price(symbol: str, timeframe: str, price: float) -> Tuple[Option
         if (not pos.sl_hit) and p <= pos.sl:
             pos.sl_hit = True
             events["sl"] = True
-
-    # SHORT
     else:
         if (not pos.tp1_hit) and p <= pos.tp1:
             pos.tp1_hit = True
@@ -139,7 +141,6 @@ def update_from_price(symbol: str, timeframe: str, price: float) -> Tuple[Option
             pos.sl_hit = True
             events["sl"] = True
 
-    # Close condition (STRICT)
     if pos.sl_hit and pos.status == "ACTIVE":
         pos.status = "CLOSED"
         pos.closed_at = _now_iso()
