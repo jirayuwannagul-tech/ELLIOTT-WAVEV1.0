@@ -209,10 +209,20 @@ def backtest_symbol(
 
         entry = float(trade_plan["entry"])
 
-        triggered = (
-            (direction == "LONG" and last_close > entry)
-            or (direction == "SHORT" and last_close < entry)
-        )
+        # ABC entry = current_price → triggered ทันที
+        # IMPULSE entry = breakout price → เช็คปกติ
+        stype = (sc.get("type") or "").upper()
+        if stype == "ABC_UP":
+            # LONG: ราคาปิดยืนเหนือ SL + 1% = momentum จริง
+            triggered = last_close > float(trade_plan["sl"]) * 1.01
+        elif stype == "ABC_DOWN":
+            # SHORT: ราคาปิดต่ำกว่า SL - 1% = momentum จริง
+            triggered = last_close < float(trade_plan["sl"]) * 0.99
+        else:
+            triggered = (
+                (direction == "LONG" and last_close > entry)
+                or (direction == "SHORT" and last_close < entry)
+            )
         if not triggered:
             continue
 
@@ -339,10 +349,20 @@ def backtest_symbol_trades(
 
         entry = float(trade_plan["entry"])
 
-        triggered = (
-            (direction == "LONG" and last_close > entry)
-            or (direction == "SHORT" and last_close < entry)
-        )
+        # ABC entry = current_price → triggered ทันที
+        # IMPULSE entry = breakout price → เช็คปกติ
+        stype = (sc.get("type") or "").upper()
+        if stype == "ABC_UP":
+            # LONG: ราคาปิดยืนเหนือ SL + 1% = momentum จริง
+            triggered = last_close > float(trade_plan["sl"]) * 1.01
+        elif stype == "ABC_DOWN":
+            # SHORT: ราคาปิดต่ำกว่า SL - 1% = momentum จริง
+            triggered = last_close < float(trade_plan["sl"]) * 0.99
+        else:
+            triggered = (
+                (direction == "LONG" and last_close > entry)
+                or (direction == "SHORT" and last_close < entry)
+            )
         if not triggered:
             continue
 

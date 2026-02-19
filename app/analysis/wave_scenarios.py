@@ -66,7 +66,8 @@ def build_scenarios(
     if len(pivots) >= 6:
         last6 = pivots[-6:]
         ok, warnings = validate_impulse(last6, "LONG")
-        if ok:
+        if ok and len(warnings) <= 1:
+
             scenarios.append({
                 "type": "IMPULSE_LONG",
                 "phase": "Wave 5 or continuation",
@@ -82,7 +83,8 @@ def build_scenarios(
     if len(pivots) >= 6:
         last6 = pivots[-6:]
         ok, warnings = validate_impulse(last6, "SHORT")
-        if ok:
+        if ok and len(warnings) <= 1:
+
             scenarios.append({
                 "type": "IMPULSE_SHORT",
                 "phase": "Wave 5 or continuation",
@@ -99,7 +101,7 @@ def build_scenarios(
         last4 = pivots[-4:]
 
         ok_down, warnings_down = validate_abc(last4, "DOWN")
-        if ok_down:
+        if ok_down and len(warnings_down) <= 1:
             scenarios.append({
                 "type": "ABC_DOWN",
                 "phase": "Wave C ลง",
@@ -110,7 +112,7 @@ def build_scenarios(
             })
 
         ok_up, warnings_up = validate_abc(last4, "UP")
-        if ok_up:
+        if ok_up and len(warnings_up) <= 1:
             scenarios.append({
                 "type": "ABC_UP",
                 "phase": "Wave C ขึ้น",

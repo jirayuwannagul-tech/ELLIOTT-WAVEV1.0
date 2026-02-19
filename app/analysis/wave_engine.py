@@ -293,12 +293,18 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         entry = trade_plan.get("entry")
         if entry is not None:
             entry = float(entry)
-            if direction == "LONG" and last_close <= entry:
-                trade_plan["triggered"] = False
-            elif direction == "SHORT" and last_close >= entry:
-                trade_plan["triggered"] = False
+            stype = (scenario.get("type") or "").upper()
+            if stype == "ABC_UP":
+                trade_plan["triggered"] = last_close > float(trade_plan["sl"]) * 1.01
+            elif stype == "ABC_DOWN":
+                trade_plan["triggered"] = last_close < float(trade_plan["sl"]) * 0.99
             else:
-                trade_plan["triggered"] = True
+                if direction == "LONG" and last_close <= entry:
+                    trade_plan["triggered"] = False
+                elif direction == "SHORT" and last_close >= entry:
+                    trade_plan["triggered"] = False
+                else:
+                    trade_plan["triggered"] = True
         else:
             trade_plan["triggered"] = False
 
