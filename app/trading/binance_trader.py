@@ -15,7 +15,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=F
 
 FUTURES_URL = "https://fapi.binance.com"          # mainnet
 # FUTURES_URL = "https://testnet.binancefuture.com"  # testnet
-#FUTURES_URL = "https://demo-fapi.binance.com"        # demo
+# FUTURES_URL = "https://demo-fapi.binance.com"        # demo
 
 def _get_keys() -> tuple[str, str]:
     api_key = os.getenv("BINANCE_API_KEY", "")

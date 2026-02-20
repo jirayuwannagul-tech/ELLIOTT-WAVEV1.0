@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from flask import Flask, request
+import requests
 from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
 
 app = Flask(__name__)
@@ -11,6 +12,14 @@ app = Flask(__name__)
 @app.route("/")
 def health():
     return "OK", 200
+
+@app.route("/debug/ip")
+def debug_ip():
+    try:
+        ipv4 = requests.get("https://api.ipify.org", timeout=10).text.strip()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+    return {"ok": True, "ipv4": ipv4}, 200
 
 @app.route("/trend-watch", methods=["POST"])
 def trend_watch():
