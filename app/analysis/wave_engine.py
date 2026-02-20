@@ -11,8 +11,6 @@ from app.analysis.pivot import find_fractal_pivots, filter_pivots
 from app.analysis.wave_scenarios import build_scenarios
 from app.risk.risk_manager import build_trade_plan
 
-from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR, MIN_CONFIDENCE_LIVE
-
 from app.indicators.ema import add_ema
 from app.indicators.rsi import add_rsi
 from app.indicators.atr import add_atr
@@ -26,7 +24,7 @@ from app.analysis.macro_bias import compute_macro_bias
 from app.analysis.multi_tf import get_mtf_summary
 from app.analysis.zones import build_zones_from_pivots, nearest_support_resist
 from app.analysis.trend_detector import detect_market_mode
-
+from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR, MIN_CONFIDENCE_LIVE, ABC_CONFIRM_BUFFER
 
 def _safe_float(x, default: float = 0.0) -> float:
     try:
@@ -295,9 +293,9 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             entry = float(entry)
             stype = (scenario.get("type") or "").upper()
             if stype == "ABC_UP":
-                trade_plan["triggered"] = last_close > float(trade_plan["sl"]) * 1.01
+                trade_plan["triggered"] = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
             elif stype == "ABC_DOWN":
-                trade_plan["triggered"] = last_close < float(trade_plan["sl"]) * 0.99
+                trade_plan["triggered"] = last_close < float(trade_plan["sl"]) * (1 - ABC_CONFIRM_BUFFER)
             else:
                 if direction == "LONG" and last_close <= entry:
                     trade_plan["triggered"] = False

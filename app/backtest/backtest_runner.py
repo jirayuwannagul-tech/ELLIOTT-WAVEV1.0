@@ -17,7 +17,8 @@ from app.indicators.trend_filter import trend_filter_ema, allow_direction
 from app.analysis.context_gate import apply_context_gate
 from app.analysis.market_regime import detect_market_regime
 from app.analysis.macro_bias import compute_macro_bias
-from app.config.wave_settings import MIN_CONFIDENCE_BACKTEST
+from app.config.wave_settings import MIN_CONFIDENCE_BACKTEST, ABC_CONFIRM_BUFFER
+
 
 logger = logging.getLogger(__name__)
 
@@ -213,11 +214,9 @@ def backtest_symbol(
         # IMPULSE entry = breakout price → เช็คปกติ
         stype = (sc.get("type") or "").upper()
         if stype == "ABC_UP":
-            # LONG: ราคาปิดยืนเหนือ SL + 1% = momentum จริง
-            triggered = last_close > float(trade_plan["sl"]) * 1.01
+            triggered = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
         elif stype == "ABC_DOWN":
-            # SHORT: ราคาปิดต่ำกว่า SL - 1% = momentum จริง
-            triggered = last_close < float(trade_plan["sl"]) * 0.99
+            triggered = last_close < float(trade_plan["sl"]) * (1 - ABC_CONFIRM_BUFFER)
         else:
             triggered = (
                 (direction == "LONG" and last_close > entry)
@@ -353,11 +352,9 @@ def backtest_symbol_trades(
         # IMPULSE entry = breakout price → เช็คปกติ
         stype = (sc.get("type") or "").upper()
         if stype == "ABC_UP":
-            # LONG: ราคาปิดยืนเหนือ SL + 1% = momentum จริง
-            triggered = last_close > float(trade_plan["sl"]) * 1.01
+            triggered = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
         elif stype == "ABC_DOWN":
-            # SHORT: ราคาปิดต่ำกว่า SL - 1% = momentum จริง
-            triggered = last_close < float(trade_plan["sl"]) * 0.99
+            triggered = last_close < float(trade_plan["sl"]) * (1 - ABC_CONFIRM_BUFFER)
         else:
             triggered = (
                 (direction == "LONG" and last_close > entry)
