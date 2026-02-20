@@ -11,7 +11,7 @@ from typing import Any
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=False)
 
 FUTURES_URL = "https://fapi.binance.com"          # mainnet
 # FUTURES_URL = "https://testnet.binancefuture.com"  # testnet
