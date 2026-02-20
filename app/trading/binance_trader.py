@@ -14,7 +14,7 @@ FUTURES_URL = "https://fapi.binance.com"          # mainnet
 
 def _get_keys() -> tuple[str, str]:
     api_key = os.getenv("BINANCE_API_KEY", "")
-    secret  = os.getenv("BINANCE_API_SECRET", "")
+    secret = os.getenv("BINANCE_SECRET_KEY", "")
     return api_key, secret
 
 def _sign(params: dict[str, Any], secret: str) -> str:
