@@ -35,7 +35,9 @@ def get_balance() -> float:
     r.raise_for_status()
     for asset in r.json():
         if asset["asset"] == "USDT":
-            return float(asset["balance"])
+            balance = float(asset["balance"])
+            print(f"✅ Binance เชื่อมต่อสำเร็จ | ยอด USDT = {balance}")  # ← เพิ่มบรรทัดนี้
+            return balance
     return 0.0
 
 def open_market_order(symbol: str, side: str, quantity: float) -> dict:
