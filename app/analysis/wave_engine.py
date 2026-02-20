@@ -25,6 +25,7 @@ from app.analysis.multi_tf import get_mtf_summary
 from app.analysis.zones import build_zones_from_pivots, nearest_support_resist
 from app.analysis.trend_detector import detect_market_mode
 from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR, MIN_CONFIDENCE_LIVE, ABC_CONFIRM_BUFFER
+from app.trading.trade_executor import execute_signal
 
 def _safe_float(x, default: float = 0.0) -> float:
     try:
@@ -319,6 +320,18 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "trade_plan": trade_plan,
             "reasons": scenario.get("reasons", []),
         })
+
+        # ← เพิ่มตรงนี้
+        if trade_plan.get("triggered"):
+            try:
+                execute_signal({
+                    "symbol": symbol,
+                    "direction": direction,
+                    "trade_plan": trade_plan,
+                })
+                logger.info(f"[{symbol}] execute_signal สำเร็จ")
+            except Exception as e:
+                logger.error(f"[{symbol}] execute_signal ล้มเหลว: {e}")
 
     msg = None
     if scenarios and not results:

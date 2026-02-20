@@ -8,9 +8,12 @@ import hashlib
 import hmac
 import requests
 from typing import Any
+from dotenv import load_dotenv  # ← เพิ่ม
+load_dotenv()  # ← เพิ่ม
 
 FUTURES_URL = "https://fapi.binance.com"          # mainnet
 # FUTURES_URL = "https://testnet.binancefuture.com"  # testnet
+#FUTURES_URL = "https://demo-fapi.binance.com"        # demo
 
 def _get_keys() -> tuple[str, str]:
     api_key = os.getenv("BINANCE_API_KEY", "")
@@ -83,3 +86,30 @@ def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) ->
     r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
     r.raise_for_status()
     return r.json()
+
+def set_leverage(symbol: str, leverage: int = 10) -> None:
+    """ ตั้ง leverage x10 """
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {
+        "symbol":    symbol,
+        "leverage":  leverage,
+        "timestamp": int(time.time() * 1000),
+    }
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/leverage", params=params, headers=headers, timeout=10)
+    r.raise_for_status()
+
+
+def set_margin_type(symbol: str, margin_type: str = "ISOLATED") -> None:
+    """ ตั้ง ISOLATED หรือ CROSSED """
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {
+        "symbol":     symbol,
+        "marginType": margin_type,
+        "timestamp":  int(time.time() * 1000),
+    }
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/marginType", params=params, headers=headers, timeout=10)
+    r.raise_for_status()
