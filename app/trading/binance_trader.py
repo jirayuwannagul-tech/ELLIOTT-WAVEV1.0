@@ -8,8 +8,10 @@ import hashlib
 import hmac
 import requests
 from typing import Any
-from dotenv import load_dotenv  # ← เพิ่ม
-load_dotenv()  # ← เพิ่ม
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 FUTURES_URL = "https://fapi.binance.com"          # mainnet
 # FUTURES_URL = "https://testnet.binancefuture.com"  # testnet

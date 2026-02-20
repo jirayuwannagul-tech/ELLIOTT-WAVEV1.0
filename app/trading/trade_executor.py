@@ -1,4 +1,9 @@
 # app/trading/trade_executor.py
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 from app.trading.binance_trader import (
     get_balance, open_market_order,
