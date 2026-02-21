@@ -42,49 +42,56 @@ def get_balance() -> float:
 
 def open_market_order(symbol: str, side: str, quantity: float) -> dict:
     api_key, secret = _get_keys()
+    position_side = "LONG" if side == "BUY" else "SHORT"
     params: dict[str, Any] = {
-        "symbol":    symbol,
-        "side":      side,
-        "type":      "MARKET",
-        "quantity":  quantity,
-        "timestamp": int(time.time() * 1000),
+        "symbol":       symbol,
+        "side":         side,
+        "positionSide": position_side,
+        "type":         "MARKET",
+        "quantity":     quantity,
+        "timestamp":    int(time.time() * 1000),
     }
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
     r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
+    print(f"Binance response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
 
 def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> dict:
     api_key, secret = _get_keys()
     close_side = "SELL" if side == "BUY" else "BUY"
+    position_side = "LONG" if side == "BUY" else "SHORT"
     params: dict[str, Any] = {
-        "symbol":     symbol,
-        "side":       close_side,
-        "type":       "STOP_MARKET",
-        "stopPrice":  sl_price,
-        "quantity":   quantity,
-        "reduceOnly": "true",
-        "timestamp":  int(time.time() * 1000),
+        "symbol":        symbol,
+        "side":          close_side,
+        "positionSide":  position_side,
+        "type":          "STOP_MARKET",
+        "stopPrice":     sl_price,
+        "closePosition": "true",
+        "timestamp":     int(time.time() * 1000),
     }
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
     r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
+    print(f"SL response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
 
 def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) -> dict:
     api_key, secret = _get_keys()
     close_side = "SELL" if side == "BUY" else "BUY"
+    position_side = "LONG" if side == "BUY" else "SHORT"
     params: dict[str, Any] = {
-        "symbol":     symbol,
-        "side":       close_side,
-        "type":       "TAKE_PROFIT_MARKET",
-        "stopPrice":  tp_price,
-        "quantity":   quantity,
-        "reduceOnly": "true",
-        "timestamp":  int(time.time() * 1000),
+        "symbol":       symbol,
+        "side":         close_side,
+        "positionSide": position_side,
+        "type":         "TAKE_PROFIT_MARKET",
+        "stopPrice":    tp_price,
+        "quantity":     quantity,
+        "timestamp":    int(time.time() * 1000),
     }
+
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
     r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
@@ -106,7 +113,6 @@ def set_leverage(symbol: str, leverage: int = 10) -> None:
 
 
 def set_margin_type(symbol: str, margin_type: str = "ISOLATED") -> None:
-    """ ตั้ง ISOLATED หรือ CROSSED """
     api_key, secret = _get_keys()
     params: dict[str, Any] = {
         "symbol":     symbol,
@@ -116,4 +122,31 @@ def set_margin_type(symbol: str, margin_type: str = "ISOLATED") -> None:
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
     r = requests.post(f"{FUTURES_URL}/fapi/v1/marginType", params=params, headers=headers, timeout=10)
+    if r.status_code == 400 and "No need to change" in r.text:
+        return  # ← ตั้งไว้แล้ว ไม่ต้องทำอะไร
     r.raise_for_status()
+
+def get_open_positions() -> list:
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {
+        "timestamp": int(time.time() * 1000),
+    }
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.get(f"{FUTURES_URL}/fapi/v2/positionRisk", params=params, headers=headers, timeout=10)
+    r.raise_for_status()
+    positions = r.json()
+    return [p for p in positions if float(p.get("positionAmt", 0)) != 0]
+
+def cancel_order(symbol: str, order_id: int) -> dict:
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {
+        "symbol":    symbol,
+        "orderId":   order_id,
+        "timestamp": int(time.time() * 1000),
+    }
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.delete(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
+    r.raise_for_status()
+    return r.json()
