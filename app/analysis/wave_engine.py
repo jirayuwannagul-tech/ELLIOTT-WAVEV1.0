@@ -28,6 +28,20 @@ from app.analysis.zones import build_zones_from_pivots, nearest_support_resist
 from app.analysis.trend_detector import detect_market_mode
 from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR, MIN_CONFIDENCE_LIVE, ABC_CONFIRM_BUFFER
 
+def _send_log(msg: str) -> None:
+    try:
+        vps_url = os.getenv("VPS_URL", "")
+        exec_token = os.getenv("EXEC_TOKEN", "")
+        if vps_url:
+            req.post(
+                f"{vps_url}/log",
+                json={"msg": msg},
+                headers={"X-EXEC-TOKEN": exec_token},
+                timeout=5
+            )
+    except Exception:
+        pass
+
 def _safe_float(x, default: float = 0.0) -> float:
     try:
         return float(x)
@@ -309,6 +323,9 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             trade_plan["triggered"] = False
 
         trade_plan["volume_ok"] = is_vol_spike
+
+        _send_log(f"[{symbol}] direction={direction} conf={scenario.get('confidence')} triggered={trade_plan.get('triggered')}")
+
 
         results.append({
             "type": scenario.get("type"),

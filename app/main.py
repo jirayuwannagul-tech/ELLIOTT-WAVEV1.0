@@ -145,6 +145,17 @@ def execute():
     ok = execute_signal(payload)
     return {"ok": bool(ok)}, 200
 
+@app.route("/log", methods=["POST"])
+def receive_log():
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+    payload = request.get_json(silent=True) or {}
+    msg = payload.get("msg", "")
+    print(f"[RAILWAY] {msg}", flush=True)
+    return {"ok": True}, 200
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "run":
         print("Manual Run Mode...")
