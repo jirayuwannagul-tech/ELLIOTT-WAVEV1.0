@@ -5,6 +5,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 import pandas as pd
+import os
+import requests as req
 
 from app.data.binance_fetcher import fetch_ohlcv, drop_unclosed_candle
 from app.analysis.pivot import find_fractal_pivots, filter_pivots
@@ -25,7 +27,6 @@ from app.analysis.multi_tf import get_mtf_summary
 from app.analysis.zones import build_zones_from_pivots, nearest_support_resist
 from app.analysis.trend_detector import detect_market_mode
 from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR, MIN_CONFIDENCE_LIVE, ABC_CONFIRM_BUFFER
-from app.trading.trade_executor import execute_signal
 
 def _safe_float(x, default: float = 0.0) -> float:
     try:
@@ -321,17 +322,24 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "reasons": scenario.get("reasons", []),
         })
 
-        # ← เพิ่มตรงนี้
         if trade_plan.get("triggered"):
             try:
-                execute_signal({
-                    "symbol": symbol,
-                    "direction": direction,
-                    "trade_plan": trade_plan,
-                })
-                logger.info(f"[{symbol}] execute_signal สำเร็จ")
+                import requests as req
+                vps_url = os.getenv("VPS_URL", "")
+                exec_token = os.getenv("EXEC_TOKEN", "")
+                req.post(
+                    f"{vps_url}/execute",
+                    json={
+                        "symbol": symbol,
+                        "direction": direction,
+                        "trade_plan": trade_plan,
+                    },
+                    headers={"X-EXEC-TOKEN": exec_token},
+                    timeout=10
+                )
+                logger.info(f"[{symbol}] ส่ง signal ไป VPS สำเร็จ")
             except Exception as e:
-                logger.error(f"[{symbol}] execute_signal ล้มเหลว: {e}")
+                logger.error(f"[{symbol}] ส่ง signal ไป VPS ล้มเหลว: {e}")
 
     msg = None
     if scenarios and not results:
