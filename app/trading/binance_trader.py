@@ -63,13 +63,13 @@ def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> d
     close_side = "SELL" if side == "BUY" else "BUY"
     position_side = "LONG" if side == "BUY" else "SHORT"
     params: dict[str, Any] = {
-        "symbol":        symbol,
-        "side":          close_side,
-        "positionSide":  position_side,
-        "type":          "STOP_MARKET",
-        "stopPrice":     sl_price,
-        "closePosition": "true",
-        "timestamp":     int(time.time() * 1000),
+        "symbol":       symbol,
+        "side":         close_side,
+        "positionSide": position_side,
+        "type":         "STOP_MARKET",
+        "stopPrice":    sl_price,
+        "quantity":     quantity,
+        "timestamp":    int(time.time() * 1000),
     }
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
