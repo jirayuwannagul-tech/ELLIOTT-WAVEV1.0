@@ -16,6 +16,7 @@ from app.config.wave_settings import TIMEFRAME
 from app.trading.binance_trader import get_balance, get_open_positions
 
 app = Flask(__name__)
+_balance_cache = {"value": None, "ts": 0}
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -72,7 +73,11 @@ def dashboard():
         return "FORBIDDEN - ใส่ ?token=YOUR_TOKEN", 403
 
     try:
-        balance = f"{get_balance():.2f}"
+        now = time.time()
+        if now - _balance_cache["ts"] > 300:
+            _balance_cache["value"] = get_balance()
+            _balance_cache["ts"] = now
+        balance = f"{_balance_cache['value']:.2f}"
     except Exception:
         balance = "เชื่อมต่อไม่ได้"
 
