@@ -10,6 +10,8 @@ from app.trading.binance_trader import (
     cancel_order
 )
 from app.trading.position_sizer import calculate_quantity
+from app.state.position_manager import lock_new_position, get_active
+from app.config.wave_settings import TIMEFRAME
 
 RISK_PCT = 0.05  # 5% ต่อไม้
 
@@ -20,6 +22,10 @@ def execute_signal(signal: dict) -> bool:
     sl        = float(signal["trade_plan"]["sl"])
     tp3       = float(signal["trade_plan"]["tp3"])
     side      = "BUY" if direction == "LONG" else "SELL"
+
+    if get_active(symbol, TIMEFRAME):
+        print(f"⚠️ [{symbol}] มี position อยู่แล้ว ไม่เปิดซ้ำ", flush=True)
+        return False
 
     balance  = get_balance()
     quantity = calculate_quantity(balance, RISK_PCT, entry, sl)
@@ -55,4 +61,13 @@ def execute_signal(signal: dict) -> bool:
     except Exception as e:
         print(f"⚠️ TP ล้มเหลว: {e}", flush=True)
 
-    return True
+    # ✅ เพิ่มตรงนี้ — บันทึก position ลง DB
+    lock_new_position(
+        symbol=symbol,
+        timeframe=TIMEFRAME,
+        direction=direction,
+        trade_plan=signal["trade_plan"],
+    )
+    print(f"✅ [{symbol}] lock position สำเร็จ", flush=True)
+
+    return True  # ← บรรทัดเดิม ไม่ต้องแก้

@@ -1,5 +1,6 @@
 import time
 import os
+import requests as req
 from datetime import datetime
 
 from app.config.wave_settings import (
@@ -10,11 +11,27 @@ from app.config.wave_settings import (
     MAX_RETRY,
 )
 from app.analysis.wave_engine import analyze_symbol
-from app.state.position_manager import get_active, lock_new_position, update_from_price
 from app.config.wave_settings import TIMEFRAME
 from app.services.telegram_reporter import format_symbol_report, send_message
 from app.trading.binance_trader import get_balance
 
+def _check_position_from_vps(symbol: str) -> bool:
+    """ถาม VPS ว่ามี position เปิดอยู่ไหม"""
+    try:
+        vps_url = os.getenv("VPS_URL", "")
+        exec_token = os.getenv("EXEC_TOKEN", "")
+        r = req.get(
+            f"{vps_url}/position/status",
+            params={"symbol": symbol},
+            headers={"X-EXEC-TOKEN": exec_token},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            return bool(r.json().get("active", False))
+        return False
+    except Exception:
+        return False
+    
 def _fmt_price(x: float) -> str:
     x = float(x)
     return f"{x:,.5f}" if x < 1 else f"{x:,.2f}"
@@ -43,13 +60,9 @@ def run_daily_wave_job():
                     print(f"[{symbol}] no analysis -> skip", flush=True)
                     break
 
-                active = get_active(symbol, TIMEFRAME)
+                active = _check_position_from_vps(symbol)
                 if active:
-                    pos, events = update_from_price(
-                        symbol,
-                        TIMEFRAME,
-                        float(analysis["price"])
-                    )
+                    print(f"[{symbol}] มี position อยู่ที่ VPS แล้ว ข้ามไป", flush=True)
                     break
 
                 scenarios = analysis.get("scenarios", []) or []
@@ -64,17 +77,7 @@ def run_daily_wave_job():
                     if trade.get("triggered") is not True:
                         continue
 
-                    ok = lock_new_position(
-                        symbol=symbol,
-                        timeframe=TIMEFRAME,
-                        direction=sc.get("direction", ""),
-                        trade_plan=trade,
-                    )
-
-                    if not ok:
-                        continue
-
-                    text = format_symbol_report(analysis)
+                    text = format_symbol_report(analysis)       
                     send_message(text)
 
                     print(f"[{symbol}] SENT signal", flush=True)

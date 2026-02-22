@@ -8,6 +8,8 @@ from flask import Flask, request
 import requests
 from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
 from app.trading.trade_executor import execute_signal
+from app.state.position_manager import get_active 
+from app.config.wave_settings import TIMEFRAME      
 from app.trading.binance_trader import get_balance, get_open_positions
 
 app = Flask(__name__)
@@ -141,9 +143,36 @@ def execute():
     got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
     if expected and got != expected:
         return "FORBIDDEN", 403
+
     payload = request.get_json(silent=True) or {}
+    symbol = payload.get("symbol", "").upper()
+
+    # ✅ เช็ค Binance จริงก่อนเปิดซ้ำ
+    try:
+        real_positions = get_open_positions()
+        symbols_open = [p["symbol"] for p in real_positions]
+        if symbol in symbols_open:
+            print(f"⚠️ [{symbol}] มี position บน Binance อยู่แล้ว ไม่เปิดซ้ำ", flush=True)
+            return {"ok": False, "reason": "position already open on Binance"}, 200
+    except Exception as e:
+        print(f"⚠️ เช็ค Binance ล้มเหลว: {e} — เปิดต่อปกติ", flush=True)
+
     ok = execute_signal(payload)
     return {"ok": bool(ok)}, 200
+
+@app.route("/position/status", methods=["GET"])
+def position_status():
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+
+    symbol = request.args.get("symbol", "").upper()
+    if not symbol:
+        return {"error": "symbol required"}, 400
+
+    active = get_active(symbol, TIMEFRAME)
+    return {"symbol": symbol, "active": active is not None}, 200
 
 @app.route("/log", methods=["POST"])
 def receive_log():
