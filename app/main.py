@@ -61,8 +61,26 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .panel .c2{bottom:0;right:0;border-width:0 1px 1px 0}
 .panel-title{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border);text-shadow:0 0 10px rgba(0,245,255,0.5)}
 .panel-title::before{content:'';width:2px;height:12px;background:var(--cyan);box-shadow:0 0 8px var(--cyan);flex-shrink:0}
-.balance{font-family:'Orbitron',monospace;font-size:36px;font-weight:700;color:var(--green);text-shadow:0 0 20px rgba(0,255,157,0.4);letter-spacing:-1px}
-.balance-unit{font-size:14px;opacity:0.5;margin-left:4px}
+
+/* ✅ เพิ่มคลาสตัวเลขให้คม + ชิดเท่ากัน */
+.num{
+  font-family:'Share Tech Mono',monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 1px;
+}
+
+/* ✅ เปลี่ยนฟอนต์ Balance ให้ตัวเลขอ่านง่าย */
+.balance{
+  font-family:'Share Tech Mono',monospace;
+  font-size:44px;
+  font-weight:700;
+  color:var(--green);
+  text-shadow:0 0 20px rgba(0,255,157,0.4);
+  letter-spacing:1px;
+}
+
+.balance-unit{font-size:14px;opacity:0.5;margin-left:6px}
 .pos-row{padding:10px 0;border-bottom:1px solid rgba(0,245,255,0.05);font-size:11px;line-height:1.8}
 .pos-row:last-child{border-bottom:none}
 .pos-sym{font-family:'Orbitron',monospace;font-size:11px;color:var(--cyan);font-weight:700}
@@ -103,7 +121,7 @@ pre::-webkit-scrollbar-thumb{background:var(--dim);border-radius:2px}
   <div class="panel">
     <div class="c1"></div><div class="c2"></div>
     <div class="panel-title">Balance</div>
-    <div class="balance">BALANCE_PLACEHOLDER<span class="balance-unit">USDT</span></div>
+    <div class="balance"><span class="num">BALANCE_PLACEHOLDER</span><span class="balance-unit">USDT</span></div>
   </div>
 
   <div class="panel">
