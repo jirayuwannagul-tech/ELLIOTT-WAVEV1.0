@@ -8,7 +8,7 @@ from flask import Flask, request
 import requests
 from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
 from app.trading.trade_executor import execute_signal
-from app.state.position_manager import get_active 
+from app.state.position_manager import get_active, _load_position, _key
 from app.config.wave_settings import TIMEFRAME      
 from app.trading.binance_trader import get_balance, get_open_positions
 
@@ -81,7 +81,12 @@ def dashboard():
             amt = p["positionAmt"]
             pnl = float(p["unRealizedProfit"])
             color = "green" if pnl >= 0 else "red"
-            pos_html += f'<p>{sym} | จำนวน: {amt} | PNL: <span class="{color}">{pnl:.2f} USDT</span></p>'
+            db_pos = _load_position(_key(sym, TIMEFRAME))
+            sl = f"{float(db_pos.get('sl',0)):,.4f}" if db_pos else "-"
+            tp3 = f"{float(db_pos.get('tp3',0)):,.4f}" if db_pos else "-"
+            entry_price = f"{float(p.get('entryPrice',0)):,.4f}"
+            direction = p.get("positionSide", "-")
+            pos_html += f'<p>{sym} | {direction} | Entry: {entry_price} | SL: {sl} | TP3: {tp3} | PNL: <span class="{color}">{pnl:.2f} USDT</span></p>'
         if not pos_html:
             pos_html = "<p>ไม่มี position เปิดอยู่</p>"
     except Exception:
