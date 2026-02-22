@@ -60,19 +60,23 @@ def open_market_order(symbol: str, side: str, quantity: float) -> dict:
 
 def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> dict:
     api_key, secret = _get_keys()
+
     close_side = "SELL" if side == "BUY" else "BUY"
     position_side = "LONG" if side == "BUY" else "SHORT"
+
     params: dict[str, Any] = {
         "symbol":       symbol,
         "side":         close_side,
         "positionSide": position_side,
         "type":         "STOP_MARKET",
         "stopPrice":    sl_price,
-        "quantity":     quantity,
+        "closePosition": "true",   # ✅ สำคัญ
         "timestamp":    int(time.time() * 1000),
     }
+
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
+
     r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
     print(f"SL response: {r.text}", flush=True)
     r.raise_for_status()
@@ -80,21 +84,25 @@ def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> d
 
 def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) -> dict:
     api_key, secret = _get_keys()
+
     close_side = "SELL" if side == "BUY" else "BUY"
     position_side = "LONG" if side == "BUY" else "SHORT"
+
     params: dict[str, Any] = {
         "symbol":       symbol,
         "side":         close_side,
         "positionSide": position_side,
         "type":         "TAKE_PROFIT_MARKET",
         "stopPrice":    tp_price,
-        "quantity":     quantity,
+        "closePosition": "true",   # ✅ สำคัญ
         "timestamp":    int(time.time() * 1000),
     }
 
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
+
     r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
+    print(f"TP response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
 
