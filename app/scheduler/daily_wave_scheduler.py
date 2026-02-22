@@ -123,7 +123,13 @@ def run_daily_wave_job():
         summary.append(f"💰 ยอด USDT: {balance:.2f}")
     except Exception:
         pass
-        
+
+    # ✅ เพิ่มตรงนี้
+    summary.append("")
+    summary.append("────────────────────")
+    summary.append("🔵 SYSTEM: ELLIOTT-WAVE")
+    summary.append("Engine: 1D")
+
     send_message("\n".join(summary), topic_id=os.getenv("TOPIC_NORMAL_ID"))
 
     print("=== END DAILY WAVE JOB ===", flush=True)
@@ -221,6 +227,12 @@ def run_trend_watch_job(min_conf: float = 65.0):
     if errors:
         lines.append("")
         lines.append(f"⚠️ errors: {errors}")
+
+    # ✅ เพิ่มตรงนี้
+    lines.append("")
+    lines.append("────────────────────")
+    lines.append("🔵 SYSTEM: ELLIOTT-WAVE")
+    lines.append("Engine: 1D")
 
     send_message("\n".join(lines), topic_id=os.getenv("TOPIC_NORMAL_ID"))
     print("=== END TREND WATCH ===", flush=True)
