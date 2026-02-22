@@ -4,6 +4,9 @@ import subprocess
 import threading
 from dotenv import load_dotenv
 load_dotenv()
+os.environ["TZ"] = "Asia/Bangkok"
+import time
+time.tzset()
 from flask import Flask, request
 import requests
 from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
