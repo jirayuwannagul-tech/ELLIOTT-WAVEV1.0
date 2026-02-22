@@ -482,10 +482,8 @@ def portfolio_simulator(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    symbols = ["BTCUSDT", "XRPUSDT", "ADAUSDT", "BNBUSDT", "TRXUSDT", "DOGEUSDT"]
+    from app.config.wave_settings import SYMBOLS
+    symbols = SYMBOLS
 
-    res = portfolio_simulator(symbols, interval="1d", limit=1000, min_confidence=60)
+    res = portfolio_simulator(symbols, interval="1d", limit=1000, min_confidence=65)
     print(res)
-
-    res2 = portfolio_simulator(symbols, interval="1d", limit=1000, min_confidence=70)
-    print(res2)
