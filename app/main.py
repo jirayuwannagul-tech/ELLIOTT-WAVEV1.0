@@ -246,20 +246,64 @@ def execute():
         return "FORBIDDEN", 403
 
     payload = request.get_json(silent=True) or {}
-    symbol = payload.get("symbol", "").upper()
+
+    # --- normalize fields ---
+    symbol = (payload.get("symbol") or "").upper().strip()
+    direction = (payload.get("direction") or "").upper().strip()
+
+    if not symbol:
+        return {"ok": False, "reason": "symbol required"}, 400
+    if direction not in ("LONG", "SHORT"):
+        return {"ok": False, "reason": "direction must be LONG/SHORT"}, 400
+
+    # --- if trade_plan missing, create minimal trade_plan from flat fields ---
+    # accept both styles:
+    # 1) {symbol,direction, trade_plan:{entry,sl,tp1,tp2,tp3,leverage,qty_usdt}}
+    # 2) {symbol,direction, entry, sl, tp1, tp2, tp3, leverage, qty_usdt}
+    tp = payload.get("trade_plan")
+    if not isinstance(tp, dict):
+        tp = {}
+
+    # fill from flat keys if not present
+    for k, flat in [
+        ("entry", "entry"),
+        ("sl", "sl"),
+        ("tp1", "tp1"),
+        ("tp2", "tp2"),
+        ("tp3", "tp3"),
+        ("leverage", "leverage"),
+        ("qty_usdt", "qty_usdt"),
+    ]:
+        if k not in tp and flat in payload:
+            tp[k] = payload.get(flat)
+
+    # validate required minimal
+    if tp.get("entry") is None:
+        return {"ok": False, "reason": "trade_plan.entry required"}, 400
+
+    # rebuild signal to what execute_signal expects
+    signal = dict(payload)
+    signal["symbol"] = symbol
+    signal["direction"] = direction
+    signal["trade_plan"] = tp
 
     # ✅ เช็ค Binance จริงก่อนเปิดซ้ำ
     try:
         real_positions = get_open_positions()
-        symbols_open = [p["symbol"] for p in real_positions]
+        symbols_open = [p.get("symbol") for p in real_positions]
         if symbol in symbols_open:
             print(f"⚠️ [{symbol}] มี position บน Binance อยู่แล้ว ไม่เปิดซ้ำ", flush=True)
             return {"ok": False, "reason": "position already open on Binance"}, 200
     except Exception as e:
         print(f"⚠️ เช็ค Binance ล้มเหลว: {e} — เปิดต่อปกติ", flush=True)
 
-    ok = execute_signal(payload)
-    return {"ok": bool(ok)}, 200
+    try:
+        ok = execute_signal(signal)
+        return {"ok": bool(ok)}, 200
+    except Exception as e:
+        # กัน 500 แบบอ่านง่าย
+        print(f"❌ execute_signal error: {e}", flush=True)
+        return {"ok": False, "reason": str(e)}, 500
 
 @app.route("/position/status", methods=["GET"])
 def position_status():

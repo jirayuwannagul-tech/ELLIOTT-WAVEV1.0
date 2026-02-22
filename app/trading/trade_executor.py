@@ -21,7 +21,9 @@ def execute_signal(signal: dict) -> bool:
     entry     = float(signal["trade_plan"]["entry"])
     sl        = float(signal["trade_plan"]["sl"])
     tp3       = float(signal["trade_plan"]["tp3"])
-    side      = "BUY" if direction == "LONG" else "SELL"
+
+    open_side = "BUY" if direction == "LONG" else "SELL"
+    close_side = "SELL" if open_side == "BUY" else "BUY"   # ✅ เพิ่ม
 
     if get_active(symbol, TIMEFRAME):
         print(f"⚠️ [{symbol}] มี position อยู่แล้ว ไม่เปิดซ้ำ", flush=True)
@@ -33,35 +35,28 @@ def execute_signal(signal: dict) -> bool:
     set_margin_type(symbol, "ISOLATED")
     set_leverage(symbol, 10)
 
-    # เปิด order
-    order = open_market_order(symbol, side, quantity)
+    order = open_market_order(symbol, open_side, quantity)  # ✅ ใช้ open_side
     order_id = order.get("orderId")
     if order_id is None:
         print("❌ ไม่ได้รับ orderId", flush=True)
         return False
     print(f"✅ Order เปิดแล้ว orderId={order_id}", flush=True)
 
-    # ตั้ง SL — ถ้าล้มเหลวให้ cancel order ทันที
+    # ✅ ตั้ง SL ต้องใช้ close_side
     try:
-        set_stop_loss(symbol, side, quantity, sl)
+        set_stop_loss(symbol, close_side, quantity, sl)
         print(f"✅ SL ตั้งแล้ว {sl}", flush=True)
     except Exception as e:
-        print(f"❌ SL ล้มเหลว: {e} — ยกเลิก order", flush=True)
-        try:
-            cancel_order(symbol, int(order_id))
-            print(f"✅ cancel order สำเร็จ", flush=True)
-        except Exception as ce:
-            print(f"❌ cancel ไม่ได้: {ce}", flush=True)
+        print(f"❌ SL ล้มเหลว: {e}", flush=True)
         return False
 
-    # ตั้ง TP
+    # ✅ ตั้ง TP ต้องใช้ close_side
     try:
-        set_take_profit(symbol, side, quantity, tp3)
+        set_take_profit(symbol, close_side, quantity, tp3)
         print(f"✅ TP ตั้งแล้ว {tp3}", flush=True)
     except Exception as e:
         print(f"⚠️ TP ล้มเหลว: {e}", flush=True)
 
-    # ✅ เพิ่มตรงนี้ — บันทึก position ลง DB
     lock_new_position(
         symbol=symbol,
         timeframe=TIMEFRAME,
@@ -70,4 +65,4 @@ def execute_signal(signal: dict) -> bool:
     )
     print(f"✅ [{symbol}] lock position สำเร็จ", flush=True)
 
-    return True  # ← บรรทัดเดิม ไม่ต้องแก้
+    return True
