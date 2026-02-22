@@ -18,6 +18,9 @@ from app.trading.binance_trader import get_balance, get_open_positions
 app = Flask(__name__)
 _balance_cache = {"value": None, "ts": 0}
 
+from app.performance.dashboard import perf_bp
+app.register_blueprint(perf_bp)
+
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
