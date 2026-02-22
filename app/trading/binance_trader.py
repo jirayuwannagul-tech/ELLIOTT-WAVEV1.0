@@ -1,6 +1,5 @@
 # app/trading/binance_trader.py
 # ติดต่อ Binance Futures API
-# ยังไม่เปิดใช้งาน - ทดสอบบน testnet ก่อน
 
 import os
 import time
@@ -11,69 +10,139 @@ from typing import Any
 from pathlib import Path
 from dotenv import load_dotenv
 
+from decimal import Decimal, ROUND_DOWN  # ✅ ใช้กัน floating เพี้ยน
+
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=False)
 
-FUTURES_URL = "https://fapi.binance.com"          # mainnet
-# FUTURES_URL = "https://testnet.binancefuture.com"  # testnet
-# FUTURES_URL = "https://demo-fapi.binance.com"        # demo
+FUTURES_URL = "https://fapi.binance.com"              # mainnet
+# FUTURES_URL = "https://testnet.binancefuture.com"   # testnet
+# FUTURES_URL = "https://demo-fapi.binance.com"       # demo
+
+# ✅ cache กันยิง exchangeInfo ถี่
+_EXCHANGE_INFO_CACHE: dict[str, Any] | None = None
+_EXCHANGE_INFO_TS: float = 0.0
+_EXCHANGE_INFO_TTL_SEC: int = 60
+
+
+def _get_exchange_info() -> dict[str, Any]:
+    global _EXCHANGE_INFO_CACHE, _EXCHANGE_INFO_TS
+    now = time.time()
+
+    # ✅ แก้ cache condition (อย่าใช้ if cache เฉยๆ)
+    if _EXCHANGE_INFO_CACHE is not None and (now - _EXCHANGE_INFO_TS) < _EXCHANGE_INFO_TTL_SEC:
+        return _EXCHANGE_INFO_CACHE
+
+    r = requests.get(f"{FUTURES_URL}/fapi/v1/exchangeInfo", timeout=10)
+    r.raise_for_status()
+
+    # ✅ แก้ return type ให้ชัวร์ (ไม่คืน None)
+    data = r.json()
+    _EXCHANGE_INFO_CACHE = data
+    _EXCHANGE_INFO_TS = now
+    return data
+
+
+def _get_lot_step(symbol: str) -> tuple[float, float]:
+    """คืนค่า (stepSize, minQty) ของเหรียญ"""
+    info = _get_exchange_info()
+    for s in info.get("symbols", []):
+        if s.get("symbol") == symbol:
+            for f in s.get("filters", []):
+                if f.get("filterType") == "LOT_SIZE":
+                    return float(f.get("stepSize", 0)), float(f.get("minQty", 0))
+    return 0.0, 0.0
+
+
+def adjust_quantity(symbol: str, quantity: float) -> float:
+    """floor quantity ตาม stepSize และเช็ก minQty"""
+    step, min_qty = _get_lot_step(symbol)
+    if step <= 0:
+        return float(quantity)
+
+    q = Decimal(str(quantity))
+    step_d = Decimal(str(step))
+
+    steps = (q / step_d).to_integral_value(rounding=ROUND_DOWN)
+    adj = steps * step_d
+
+    if min_qty > 0 and adj < Decimal(str(min_qty)):
+        return 0.0
+
+    return float(adj)
+
 
 def _get_keys() -> tuple[str, str]:
     api_key = os.getenv("BINANCE_API_KEY", "")
     secret = os.getenv("BINANCE_SECRET_KEY", "")
     return api_key, secret
 
+
 def _sign(params: dict[str, Any], secret: str) -> str:
     query = "&".join(f"{k}={v}" for k, v in params.items())
     return hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+
 
 def get_balance() -> float:
     api_key, secret = _get_keys()
     params: dict[str, Any] = {"timestamp": int(time.time() * 1000)}
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
+
     r = requests.get(f"{FUTURES_URL}/fapi/v2/balance", params=params, headers=headers, timeout=10)
     r.raise_for_status()
+
     for asset in r.json():
-        if asset["asset"] == "USDT":
+        if asset.get("asset") == "USDT":
             balance = float(asset["balance"])
-            print(f"✅ Binance เชื่อมต่อสำเร็จ | ยอด USDT = {balance}")  # ← เพิ่มบรรทัดนี้
+            print(f"✅ Binance เชื่อมต่อสำเร็จ | ยอด USDT = {balance}", flush=True)
             return balance
     return 0.0
 
+
 def open_market_order(symbol: str, side: str, quantity: float) -> dict:
     api_key, secret = _get_keys()
+
+    quantity = adjust_quantity(symbol, quantity)
+    if quantity <= 0:
+        raise ValueError(f"quantity too small after step adjust: {symbol}")
+
     position_side = "LONG" if side == "BUY" else "SHORT"
     params: dict[str, Any] = {
-        "symbol":       symbol,
-        "side":         side,
+        "symbol": symbol,
+        "side": side,
         "positionSide": position_side,
-        "type":         "MARKET",
-        "quantity":     quantity,
-        "timestamp":    int(time.time() * 1000),
+        "type": "MARKET",
+        "quantity": quantity,
+        "timestamp": int(time.time() * 1000),
     }
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
+
     r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
     print(f"Binance response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
 
+
 def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> dict:
     api_key, secret = _get_keys()
+
+    quantity = adjust_quantity(symbol, quantity)
+    if quantity <= 0:
+        raise ValueError(f"quantity too small after step adjust: {symbol}")
 
     close_side = "SELL" if side == "BUY" else "BUY"
     position_side = "LONG" if side == "BUY" else "SHORT"
 
     params: dict[str, Any] = {
-        "symbol":       symbol,
-        "side":         close_side,
+        "symbol": symbol,
+        "side": close_side,
         "positionSide": position_side,
-        "type":         "STOP_MARKET",
-        "stopPrice":    sl_price,
-        "closePosition": "true",   # ✅ สำคัญ
-        "timestamp":    int(time.time() * 1000),
+        "type": "STOP_MARKET",
+        "stopPrice": sl_price,
+        "quantity": quantity,
+        "timestamp": int(time.time() * 1000),
     }
-
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
 
@@ -82,40 +151,44 @@ def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> d
     r.raise_for_status()
     return r.json()
 
+
 def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) -> dict:
     api_key, secret = _get_keys()
+
+    quantity = adjust_quantity(symbol, quantity)
+    if quantity <= 0:
+        raise ValueError(f"quantity too small after step adjust: {symbol}")
 
     close_side = "SELL" if side == "BUY" else "BUY"
     position_side = "LONG" if side == "BUY" else "SHORT"
 
     params: dict[str, Any] = {
-        "symbol":       symbol,
-        "side":         close_side,
+        "symbol": symbol,
+        "side": close_side,
         "positionSide": position_side,
-        "type":         "TAKE_PROFIT_MARKET",
-        "stopPrice":    tp_price,
-        "closePosition": "true",   # ✅ สำคัญ
-        "timestamp":    int(time.time() * 1000),
-    }
-
-    params["signature"] = _sign(params, secret)
-    headers = {"X-MBX-APIKEY": api_key}
-
-    r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
-    print(f"TP response: {r.text}", flush=True)
-    r.raise_for_status()
-    return r.json()
-
-def set_leverage(symbol: str, leverage: int = 10) -> None:
-    """ ตั้ง leverage x10 """
-    api_key, secret = _get_keys()
-    params: dict[str, Any] = {
-        "symbol":    symbol,
-        "leverage":  leverage,
+        "type": "TAKE_PROFIT_MARKET",
+        "stopPrice": tp_price,
+        "quantity": quantity,
         "timestamp": int(time.time() * 1000),
     }
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
+
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def set_leverage(symbol: str, leverage: int = 10) -> None:
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {
+        "symbol": symbol,
+        "leverage": leverage,
+        "timestamp": int(time.time() * 1000),
+    }
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+
     r = requests.post(f"{FUTURES_URL}/fapi/v1/leverage", params=params, headers=headers, timeout=10)
     r.raise_for_status()
 
@@ -123,38 +196,41 @@ def set_leverage(symbol: str, leverage: int = 10) -> None:
 def set_margin_type(symbol: str, margin_type: str = "ISOLATED") -> None:
     api_key, secret = _get_keys()
     params: dict[str, Any] = {
-        "symbol":     symbol,
+        "symbol": symbol,
         "marginType": margin_type,
-        "timestamp":  int(time.time() * 1000),
-    }
-    params["signature"] = _sign(params, secret)
-    headers = {"X-MBX-APIKEY": api_key}
-    r = requests.post(f"{FUTURES_URL}/fapi/v1/marginType", params=params, headers=headers, timeout=10)
-    if r.status_code == 400 and "No need to change" in r.text:
-        return  # ← ตั้งไว้แล้ว ไม่ต้องทำอะไร
-    r.raise_for_status()
-
-def get_open_positions() -> list:
-    api_key, secret = _get_keys()
-    params: dict[str, Any] = {
         "timestamp": int(time.time() * 1000),
     }
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
+
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/marginType", params=params, headers=headers, timeout=10)
+    if r.status_code == 400 and "No need to change" in r.text:
+        return
+    r.raise_for_status()
+
+
+def get_open_positions() -> list:
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {"timestamp": int(time.time() * 1000)}
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+
     r = requests.get(f"{FUTURES_URL}/fapi/v2/positionRisk", params=params, headers=headers, timeout=10)
     r.raise_for_status()
     positions = r.json()
     return [p for p in positions if float(p.get("positionAmt", 0)) != 0]
 
+
 def cancel_order(symbol: str, order_id: int) -> dict:
     api_key, secret = _get_keys()
     params: dict[str, Any] = {
-        "symbol":    symbol,
-        "orderId":   order_id,
+        "symbol": symbol,
+        "orderId": order_id,
         "timestamp": int(time.time() * 1000),
     }
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
+
     r = requests.delete(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
     r.raise_for_status()
     return r.json()
