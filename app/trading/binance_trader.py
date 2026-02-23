@@ -46,18 +46,34 @@ def _get_lot_step(symbol: str) -> tuple[float, float]:
                     return float(f.get("stepSize", 0)), float(f.get("minQty", 0))
     return 0.0, 0.0
 
-
 def adjust_quantity(symbol: str, quantity: float) -> float:
     step, min_qty = _get_lot_step(symbol)
     if step <= 0:
         return float(quantity)
+
     q = Decimal(str(quantity))
     step_d = Decimal(str(step))
     steps = (q / step_d).to_integral_value(rounding=ROUND_DOWN)
     adj = steps * step_d
+
     if min_qty > 0 and adj < Decimal(str(min_qty)):
         return 0.0
+
     return float(adj)
+
+def adjust_price(symbol: str, price: float) -> float:
+    info = _get_exchange_info()
+    for s in info.get("symbols", []):
+        if s.get("symbol") == symbol:
+            for f in s.get("filters", []):
+                if f.get("filterType") == "PRICE_FILTER":
+                    tick = float(f.get("tickSize", 0))
+                    if tick > 0:
+                        p = Decimal(str(price))
+                        t = Decimal(str(tick))
+                        steps = (p / t).to_integral_value(rounding=ROUND_DOWN)
+                        return float(steps * t)
+    return float(price)
 
 
 def _get_keys() -> tuple[str, str]:
@@ -117,6 +133,9 @@ def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> d
     close_side = "SELL" if open_side == "BUY" else "BUY"
     position_side = "LONG" if open_side == "BUY" else "SHORT"
 
+    # 🔥 ปรับ precision ก่อน
+    sl_price = adjust_price(symbol, sl_price)
+
     params: dict[str, Any] = {
         "algoType":      "CONDITIONAL",
         "symbol":        symbol,
@@ -148,6 +167,9 @@ def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) ->
 
     close_side = "SELL" if open_side == "BUY" else "BUY"
     position_side = "LONG" if open_side == "BUY" else "SHORT"
+
+    # 🔥 ปรับ precision ก่อน
+    tp_price = adjust_price(symbol, tp_price)
 
     params: dict[str, Any] = {
         "algoType":      "CONDITIONAL",
