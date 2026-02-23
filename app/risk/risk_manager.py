@@ -220,3 +220,54 @@ def build_trade_plan(
         trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
 
     return trade
+
+def recalculate_from_fill(
+    direction: str,
+    actual_entry: float,
+    original_sl: float,
+    original_tp_rr: float,   # RR ที่ตั้งใจไว้ เช่น 1.618 หรือ 2.0
+    min_rr: float = 1.6,
+) -> Dict:
+    """
+    คำนวณ SL/TP ใหม่จาก fill price จริง
+    - SL คงที่ (technical level เดิม)
+    - TP recalculate จาก actual_entry × ratio เดิม
+    - validate RR >= min_rr
+    """
+    direction = direction.upper()
+    risk = abs(actual_entry - original_sl)
+
+    if risk <= 0:
+        return {"valid": False, "reason": "risk=0 (entry==sl)"}
+
+    # คำนวณ TP ใหม่จาก actual_entry ด้วย ratio เดิม
+    if direction == "LONG":
+        tp1 = actual_entry + risk * 1.0
+        tp2 = actual_entry + risk * original_tp_rr
+        tp3 = actual_entry + risk * 2.0
+    else:
+        tp1 = actual_entry - risk * 1.0
+        tp2 = actual_entry - risk * original_tp_rr
+        tp3 = actual_entry - risk * 2.0
+
+    rr = calculate_rr(actual_entry, original_sl, tp2)
+
+    if rr < min_rr:
+        return {
+            "valid": False,
+            "reason": f"RR หลัง fill ต่ำ ({round(rr,2)} < {min_rr})",
+            "actual_entry": actual_entry,
+            "sl": original_sl,
+            "rr": round(rr, 2),
+        }
+
+    return {
+        "valid": True,
+        "actual_entry": actual_entry,
+        "sl": original_sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "rr": round(rr, 2),
+        "risk": round(risk, 6),
+    }

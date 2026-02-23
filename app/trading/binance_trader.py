@@ -243,3 +243,4 @@ def cancel_order(symbol: str, order_id: int) -> dict:
     r = requests.delete(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
     r.raise_for_status()
     return r.json()
+

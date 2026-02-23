@@ -1099,13 +1099,13 @@ def label_pivot_chain(pivots: List[Dict]) -> Dict:
         "reasons": best.reasons,
         # ✅ ส่ง pivot prices มาด้วย (ย่อ)
         "pivots": [
-            {
-                "index": int(p.get("index")),
-                "type": p.get("type"),
-                "price": float(p.get("price")),
-            }
-            for p in (best.pivots or [])
-        ],
+    {
+        "index": int(p.get("index") or 0),
+        "type": p.get("type"),
+        "price": float(p.get("price") or 0),
+    }
+    for p in (best.pivots or [])
+],
     }
 
     return {"label": label, "matches": matches}
@@ -2343,22 +2343,27 @@ def volume_spike(df: pd.DataFrame, length: int = 20, multiplier: float = 1.5) ->
 
     return vol > vol_ma * multiplier
 ===== app/main.py =====
+# app/main.py
 import sys
 import os
 import subprocess
 import threading
 from dotenv import load_dotenv
+
 load_dotenv()
 os.environ["TZ"] = "Asia/Bangkok"
+
 import time
 time.tzset()
+
 from flask import Flask, request
 import requests
+
 from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
-from app.trading.trade_executor import execute_signal
-from app.state.position_manager import get_active, _load_position, _key
-from app.config.wave_settings import TIMEFRAME      
+from app.config.wave_settings import TIMEFRAME
 from app.trading.binance_trader import get_balance, get_open_positions
+from app.trading.trade_executor import execute_signal
+# from app.state.position_manager import get_active, _load_position, _key
 
 app = Flask(__name__)
 _balance_cache = {"value": None, "ts": 0}
@@ -2406,25 +2411,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .panel .c2{bottom:0;right:0;border-width:0 1px 1px 0}
 .panel-title{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border);text-shadow:0 0 10px rgba(0,245,255,0.5)}
 .panel-title::before{content:'';width:2px;height:12px;background:var(--cyan);box-shadow:0 0 8px var(--cyan);flex-shrink:0}
-
-/* ✅ เพิ่มคลาสตัวเลขให้คม + ชิดเท่ากัน */
-.num{
-  font-family:'Share Tech Mono',monospace;
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1;
-  letter-spacing: 1px;
-}
-
-/* ✅ เปลี่ยนฟอนต์ Balance ให้ตัวเลขอ่านง่าย */
-.balance{
-  font-family:'Share Tech Mono',monospace;
-  font-size:44px;
-  font-weight:700;
-  color:var(--green);
-  text-shadow:0 0 20px rgba(0,255,157,0.4);
-  letter-spacing:1px;
-}
-
+.num{font-family:'Share Tech Mono',monospace;font-variant-numeric: tabular-nums;font-feature-settings: "tnum" 1;letter-spacing: 1px;}
+.balance{font-family:'Share Tech Mono',monospace;font-size:44px;font-weight:700;color:var(--green);text-shadow:0 0 20px rgba(0,255,157,0.4);letter-spacing:1px;}
 .balance-unit{font-size:14px;opacity:0.5;margin-left:6px}
 .pos-row{padding:10px 0;border-bottom:1px solid rgba(0,245,255,0.05);font-size:11px;line-height:1.8}
 .pos-row:last-child{border-bottom:none}
@@ -2498,6 +2486,8 @@ pre::-webkit-scrollbar-thumb{background:var(--dim);border-radius:2px}
 </body>
 </html>"""
 
+# ------------------ DASHBOARD ------------------
+
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
     token = request.args.get("token", "")
@@ -2506,13 +2496,9 @@ def dashboard():
         return "FORBIDDEN - ใส่ ?token=YOUR_TOKEN", 403
 
     try:
-        now = time.time()
-        if now - _balance_cache["ts"] > 300:
-            _balance_cache["value"] = get_balance()
-            _balance_cache["ts"] = now
-        balance = f"{_balance_cache['value']:.2f}"
-    except Exception:
-        balance = "เชื่อมต่อไม่ได้"
+        balance = f"{get_balance():.2f}"
+    except Exception as e:
+        balance = f"ERROR: {e}"
 
     try:
         positions = get_open_positions()
@@ -2521,32 +2507,30 @@ def dashboard():
             sym = p["symbol"]
             amt = p["positionAmt"]
             pnl = float(p["unRealizedProfit"])
-            color = "green" if pnl >= 0 else "red"
-            db_pos = _load_position(_key(sym, TIMEFRAME))
-            sl = f"{float(db_pos.get('sl',0)):,.4f}" if db_pos else "-"
-            tp3 = f"{float(db_pos.get('tp3',0)):,.4f}" if db_pos else "-"
-            entry_price = f"{float(p.get('entryPrice',0)):,.4f}"
-            direction = p.get("positionSide", "-")
-            pos_html += f'<div class="pos-row"><span class="pos-sym">{sym}</span> | {direction} | Entry: {entry_price} | SL: {sl} | TP3: {tp3} | PNL: <span class="pnl-{color}">{pnl:.2f} USDT</span></div>'
+            entry = p.get("entryPrice", "-")
+            pos_html += f"<div>{sym} | Amt: {amt} | Entry: {entry} | PNL: {pnl:.2f}</div>"
         if not pos_html:
-            pos_html = '<div class="empty-pos">NO ACTIVE POSITIONS</div>'
-    except Exception:
-        pos_html = "<p>ดึงข้อมูลไม่ได้</p>"
+            pos_html = "<div>NO ACTIVE POSITION</div>"
+    except Exception as e:
+        pos_html = f"<div>ERROR: {e}</div>"
+
+    html = DASHBOARD_HTML
+    html = html.replace("BALANCE_PLACEHOLDER", balance)
+    html = html.replace("POSITION_PLACEHOLDER", pos_html)
 
     try:
         log = subprocess.check_output(
             ["journalctl", "-u", "elliott", "-n", "50", "--no-pager"],
             text=True
         )
-    except Exception:
-        log = "ไม่พบ log"
+    except Exception as e:
+        log = f"LOG ERROR: {e}"
 
-    html = DASHBOARD_HTML
-    html = html.replace("BALANCE_PLACEHOLDER", balance)
-    html = html.replace("POSITION_PLACEHOLDER", pos_html)
     html = html.replace("LOG_PLACEHOLDER", log)
     html = html.replace("TOKEN_PLACEHOLDER", token)
+
     return html
+
 
 @app.route("/dashboard/run", methods=["POST"])
 def dashboard_run():
@@ -2554,34 +2538,12 @@ def dashboard_run():
     expected = (os.getenv("EXEC_TOKEN") or "").strip()
     if token != expected:
         return "FORBIDDEN", 403
+
     threading.Thread(target=run_daily_wave_job).start()
     return f'<meta http-equiv="refresh" content="3;url=/dashboard?token={token}">Running...'
 
-@app.route("/")
-def health():
-    return "OK", 200
 
-@app.route("/debug/ip")
-def debug_ip():
-    try:
-        ipv4 = requests.get("https://api.ipify.org", timeout=10).text.strip()
-    except Exception as e:
-        return {"ok": False, "error": str(e)}, 500
-    return {"ok": True, "ipv4": ipv4}, 200
-
-@app.route("/trend-watch", methods=["POST"])
-def trend_watch():
-    run_trend_watch_job(min_conf=65.0)
-    return "OK", 200
-
-@app.route("/run-daily", methods=["POST"])
-def run_daily():
-    expected = (os.getenv("CRON_TOKEN") or "").strip()
-    got = (request.headers.get("X-CRON-TOKEN") or "").strip()
-    if expected and got != expected:
-        return "FORBIDDEN", 403
-    run_daily_wave_job()
-    return "OK", 200
+# ------------------ EXECUTE ------------------
 
 @app.route("/execute", methods=["POST"])
 def execute():
@@ -2591,64 +2553,10 @@ def execute():
         return "FORBIDDEN", 403
 
     payload = request.get_json(silent=True) or {}
+    execute_signal(payload)
+    return {"ok": True}, 200
 
-    # --- normalize fields ---
-    symbol = (payload.get("symbol") or "").upper().strip()
-    direction = (payload.get("direction") or "").upper().strip()
-
-    if not symbol:
-        return {"ok": False, "reason": "symbol required"}, 400
-    if direction not in ("LONG", "SHORT"):
-        return {"ok": False, "reason": "direction must be LONG/SHORT"}, 400
-
-    # --- if trade_plan missing, create minimal trade_plan from flat fields ---
-    # accept both styles:
-    # 1) {symbol,direction, trade_plan:{entry,sl,tp1,tp2,tp3,leverage,qty_usdt}}
-    # 2) {symbol,direction, entry, sl, tp1, tp2, tp3, leverage, qty_usdt}
-    tp = payload.get("trade_plan")
-    if not isinstance(tp, dict):
-        tp = {}
-
-    # fill from flat keys if not present
-    for k, flat in [
-        ("entry", "entry"),
-        ("sl", "sl"),
-        ("tp1", "tp1"),
-        ("tp2", "tp2"),
-        ("tp3", "tp3"),
-        ("leverage", "leverage"),
-        ("qty_usdt", "qty_usdt"),
-    ]:
-        if k not in tp and flat in payload:
-            tp[k] = payload.get(flat)
-
-    # validate required minimal
-    if tp.get("entry") is None:
-        return {"ok": False, "reason": "trade_plan.entry required"}, 400
-
-    # rebuild signal to what execute_signal expects
-    signal = dict(payload)
-    signal["symbol"] = symbol
-    signal["direction"] = direction
-    signal["trade_plan"] = tp
-
-    # ✅ เช็ค Binance จริงก่อนเปิดซ้ำ
-    try:
-        real_positions = get_open_positions()
-        symbols_open = [p.get("symbol") for p in real_positions]
-        if symbol in symbols_open:
-            print(f"⚠️ [{symbol}] มี position บน Binance อยู่แล้ว ไม่เปิดซ้ำ", flush=True)
-            return {"ok": False, "reason": "position already open on Binance"}, 200
-    except Exception as e:
-        print(f"⚠️ เช็ค Binance ล้มเหลว: {e} — เปิดต่อปกติ", flush=True)
-
-    try:
-        ok = execute_signal(signal)
-        return {"ok": bool(ok)}, 200
-    except Exception as e:
-        # กัน 500 แบบอ่านง่าย
-        print(f"❌ execute_signal error: {e}", flush=True)
-        return {"ok": False, "reason": str(e)}, 500
+# ------------------ POSITION STATUS ------------------
 
 @app.route("/position/status", methods=["GET"])
 def position_status():
@@ -2661,8 +2569,42 @@ def position_status():
     if not symbol:
         return {"error": "symbol required"}, 400
 
-    active = get_active(symbol, TIMEFRAME)
-    return {"symbol": symbol, "active": active is not None}, 200
+    positions = get_open_positions()
+    for p in positions:
+        if p["symbol"] == symbol and float(p["positionAmt"]) != 0:
+            return {"symbol": symbol, "active": True}, 200
+
+    return {"symbol": symbol, "active": False}, 200
+
+@app.route("/")
+def health():
+    return "OK", 200
+
+
+@app.route("/debug/ip")
+def debug_ip():
+    try:
+        ipv4 = requests.get("https://api.ipify.org", timeout=10).text.strip()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+    return {"ok": True, "ipv4": ipv4}, 200
+
+
+@app.route("/trend-watch", methods=["POST"])
+def trend_watch():
+    run_trend_watch_job(min_conf=65.0)
+    return "OK", 200
+
+
+@app.route("/run-daily", methods=["POST"])
+def run_daily():
+    expected = (os.getenv("CRON_TOKEN") or "").strip()
+    got = (request.headers.get("X-CRON-TOKEN") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+    run_daily_wave_job()
+    return "OK", 200
+
 
 @app.route("/log", methods=["POST"])
 def receive_log():
@@ -2674,6 +2616,38 @@ def receive_log():
     msg = payload.get("msg", "")
     print(f"[RAILWAY] {msg}", flush=True)
     return {"ok": True}, 200
+
+
+# ✅ FIX: ใส่ token กันคนสุ่มยิง attach SL/TP
+@app.route("/debug/attach-sl-tp/<symbol>")
+def debug_attach(symbol: str):
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.args.get("token") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+
+    from app.trading.binance_trader import get_open_positions, set_stop_loss, set_take_profit
+
+    symbol = (symbol or "").upper().strip()
+    positions = get_open_positions()
+
+    for p in positions:
+        if p.get("symbol") == symbol and float(p.get("positionAmt", 0)) != 0:
+            amt = float(p["positionAmt"])
+            mark = float(p.get("markPrice", 0) or 0)
+            side = "BUY" if amt > 0 else "SELL"  # ✅ side = ฝั่งเปิด (open_side)
+
+            # ตัวอย่างชั่วคราว
+            sl = mark * (0.5 if amt > 0 else 1.5)
+            tp = mark * (1.5 if amt > 0 else 0.5)
+
+            set_stop_loss(symbol, side, abs(amt), sl)
+            set_take_profit(symbol, side, abs(amt), tp)
+
+            return f"OK attached SL/TP to {symbol}", 200
+
+    return "NO ACTIVE POSITION", 404
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "run":
@@ -3428,6 +3402,56 @@ def build_trade_plan(
 
     return trade
 
+def recalculate_from_fill(
+    direction: str,
+    actual_entry: float,
+    original_sl: float,
+    original_tp_rr: float,   # RR ที่ตั้งใจไว้ เช่น 1.618 หรือ 2.0
+    min_rr: float = 1.6,
+) -> Dict:
+    """
+    คำนวณ SL/TP ใหม่จาก fill price จริง
+    - SL คงที่ (technical level เดิม)
+    - TP recalculate จาก actual_entry × ratio เดิม
+    - validate RR >= min_rr
+    """
+    direction = direction.upper()
+    risk = abs(actual_entry - original_sl)
+
+    if risk <= 0:
+        return {"valid": False, "reason": "risk=0 (entry==sl)"}
+
+    # คำนวณ TP ใหม่จาก actual_entry ด้วย ratio เดิม
+    if direction == "LONG":
+        tp1 = actual_entry + risk * 1.0
+        tp2 = actual_entry + risk * original_tp_rr
+        tp3 = actual_entry + risk * 2.0
+    else:
+        tp1 = actual_entry - risk * 1.0
+        tp2 = actual_entry - risk * original_tp_rr
+        tp3 = actual_entry - risk * 2.0
+
+    rr = calculate_rr(actual_entry, original_sl, tp2)
+
+    if rr < min_rr:
+        return {
+            "valid": False,
+            "reason": f"RR หลัง fill ต่ำ ({round(rr,2)} < {min_rr})",
+            "actual_entry": actual_entry,
+            "sl": original_sl,
+            "rr": round(rr, 2),
+        }
+
+    return {
+        "valid": True,
+        "actual_entry": actual_entry,
+        "sl": original_sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "rr": round(rr, 2),
+        "risk": round(risk, 6),
+    }
 ===== app/scheduler/__init__.py =====
 
 ===== app/scheduler/daily_wave_scheduler.py =====
@@ -3446,7 +3470,7 @@ from app.config.wave_settings import (
 from app.analysis.wave_engine import analyze_symbol
 from app.config.wave_settings import TIMEFRAME
 from app.services.telegram_reporter import format_symbol_report, send_message
-from app.trading.binance_trader import get_balance
+#from app.trading.binance_trader import get_balance
 
 def _check_position_from_vps(symbol: str) -> bool:
     """ถาม VPS ว่ามี position เปิดอยู่ไหม"""
@@ -3472,11 +3496,12 @@ def _fmt_price(x: float) -> str:
 def run_daily_wave_job():
     print(f"=== START DAILY WAVE JOB | tf={TIMEFRAME} | symbols={len(SYMBOLS)} ===", flush=True)
 
-    try:
-        balance = get_balance()
-        print(f"✅ Binance พร้อม | ยอด USDT = {balance:.2f}", flush=True)
-    except Exception as e:
-        print(f"❌ Binance เชื่อมต่อไม่ได้: {e}", flush=True)
+    # try:
+    #     balance = get_balance()
+    #     print(f"✅ Binance พร้อม | ยอด USDT = {balance:.2f}", flush=True)
+    # except Exception as e:
+    #     print(f"❌ Binance เชื่อมต่อไม่ได้: {e}", flush=True)
+    print("✅ Binance: SKIP (LOCAL MODE)", flush=True)
 
     found = 0
     found_symbols = []
@@ -3551,11 +3576,11 @@ def run_daily_wave_job():
     if errors:
         summary.append(f"⚠️ errors: {errors}")
 
-    try:
-        balance = get_balance()
-        summary.append(f"💰 ยอด USDT: {balance:.2f}")
-    except Exception:
-        pass
+    # try:
+    #     balance = get_balance()
+    #     summary.append(f"💰 ยอด USDT: {balance:.2f}")
+    # except Exception:
+    #     pass
 
     # ✅ เพิ่มตรงนี้
     summary.append("")
@@ -4079,18 +4104,34 @@ def _get_lot_step(symbol: str) -> tuple[float, float]:
                     return float(f.get("stepSize", 0)), float(f.get("minQty", 0))
     return 0.0, 0.0
 
-
 def adjust_quantity(symbol: str, quantity: float) -> float:
     step, min_qty = _get_lot_step(symbol)
     if step <= 0:
         return float(quantity)
+
     q = Decimal(str(quantity))
     step_d = Decimal(str(step))
     steps = (q / step_d).to_integral_value(rounding=ROUND_DOWN)
     adj = steps * step_d
+
     if min_qty > 0 and adj < Decimal(str(min_qty)):
         return 0.0
+
     return float(adj)
+
+def adjust_price(symbol: str, price: float) -> float:
+    info = _get_exchange_info()
+    for s in info.get("symbols", []):
+        if s.get("symbol") == symbol:
+            for f in s.get("filters", []):
+                if f.get("filterType") == "PRICE_FILTER":
+                    tick = float(f.get("tickSize", 0))
+                    if tick > 0:
+                        p = Decimal(str(price))
+                        t = Decimal(str(tick))
+                        steps = (p / t).to_integral_value(rounding=ROUND_DOWN)
+                        return float(steps * t)
+    return float(price)
 
 
 def _get_keys() -> tuple[str, str]:
@@ -4140,22 +4181,33 @@ def open_market_order(symbol: str, side: str, quantity: float) -> dict:
     r.raise_for_status()
     return r.json()
 
-
 def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> dict:
     api_key, secret = _get_keys()
-    close_side = "SELL" if side == "BUY" else "BUY"
-    position_side = "LONG" if side == "BUY" else "SHORT"
+
+    open_side = (side or "").upper()
+    if open_side not in ("BUY", "SELL"):
+        raise ValueError(f"invalid side(open_side): {side}")
+
+    close_side = "SELL" if open_side == "BUY" else "BUY"
+    position_side = "LONG" if open_side == "BUY" else "SHORT"
+
+    # 🔥 ปรับ precision ก่อน
+    sl_price = adjust_price(symbol, sl_price)
+
     params: dict[str, Any] = {
         "algoType":      "CONDITIONAL",
         "symbol":        symbol,
         "side":          close_side,
-        "positionSide":  position_side,
         "type":          "STOP_MARKET",
         "triggerPrice":  sl_price,
         "closePosition": "true",
         "workingType":   "CONTRACT_PRICE",
         "timestamp":     int(time.time() * 1000),
     }
+
+    if IS_HEDGE_MODE:
+        params["positionSide"] = position_side
+
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
     r = requests.post(f"{FUTURES_URL}/fapi/v1/algoOrder", params=params, headers=headers, timeout=10)
@@ -4166,26 +4218,37 @@ def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> d
 
 def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) -> dict:
     api_key, secret = _get_keys()
-    close_side = "SELL" if side == "BUY" else "BUY"
-    position_side = "LONG" if side == "BUY" else "SHORT"
+
+    open_side = (side or "").upper()
+    if open_side not in ("BUY", "SELL"):
+        raise ValueError(f"invalid side(open_side): {side}")
+
+    close_side = "SELL" if open_side == "BUY" else "BUY"
+    position_side = "LONG" if open_side == "BUY" else "SHORT"
+
+    # 🔥 ปรับ precision ก่อน
+    tp_price = adjust_price(symbol, tp_price)
+
     params: dict[str, Any] = {
         "algoType":      "CONDITIONAL",
         "symbol":        symbol,
         "side":          close_side,
-        "positionSide":  position_side,
         "type":          "TAKE_PROFIT_MARKET",
         "triggerPrice":  tp_price,
         "closePosition": "true",
         "workingType":   "CONTRACT_PRICE",
         "timestamp":     int(time.time() * 1000),
     }
+
+    if IS_HEDGE_MODE:
+        params["positionSide"] = position_side
+
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
     r = requests.post(f"{FUTURES_URL}/fapi/v1/algoOrder", params=params, headers=headers, timeout=10)
     print(f"TP response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
-
 
 def set_leverage(symbol: str, leverage: int = 10) -> None:
     api_key, secret = _get_keys()
@@ -4238,6 +4301,8 @@ def cancel_order(symbol: str, order_id: int) -> dict:
     r = requests.delete(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
     r.raise_for_status()
     return r.json()
+
+
 ===== app/trading/position_sizer.py =====
 # app/trading/position_sizer.py
 # คำนวณขนาด position จากงบและ risk %
@@ -4258,70 +4323,202 @@ def calculate_quantity(balance: float, risk_pct: float, entry: float, sl: float)
 
 ===== app/trading/trade_executor.py =====
 # app/trading/trade_executor.py
-import os
+
 from pathlib import Path
 from dotenv import load_dotenv
+
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=False)
+
 from app.trading.binance_trader import (
-    get_balance, open_market_order,
-    set_stop_loss, set_take_profit,
-    set_leverage, set_margin_type,
-    cancel_order
+    get_balance,
+    open_market_order,
+    set_stop_loss,
+    set_take_profit,
+    set_leverage,
+    set_margin_type,
 )
+
 from app.trading.position_sizer import calculate_quantity
 from app.state.position_manager import lock_new_position, get_active
 from app.config.wave_settings import TIMEFRAME
 
-RISK_PCT = 0.05  # 5% ต่อไม้
+RISK_PCT = 0.05        # เสี่ยง 5% ต่อไม้
+MIN_RR_AFTER_FILL = 1.6  # RR ขั้นต่ำหลัง fill จริง
+
+
+def _get_actual_entry(order: dict, entry_est: float) -> float:
+    """
+    ดึง fill price จริงจาก order response
+    ลำดับ: avgPrice → fills[] weighted avg → entry_est (fallback)
+    """
+    # 1) avgPrice ตรง ๆ
+    avg = float(order.get("avgPrice") or 0)
+    if avg > 0:
+        return avg
+
+    # 2) weighted avg จาก fills[]
+    fills = order.get("fills") or []
+    if fills:
+        total_qty = sum(float(f["qty"]) for f in fills)
+        if total_qty > 0:
+            return sum(float(f["price"]) * float(f["qty"]) for f in fills) / total_qty
+
+    # 3) fallback
+    return entry_est
+
+
+def _recalculate_plan(
+    direction: str,
+    actual_entry: float,
+    sl: float,
+    tp_rr: float,
+) -> dict:
+    """
+    คำนวณ SL/TP ใหม่จาก actual_entry
+    - SL คงเป็น technical level เดิม (ไม่ขยับ)
+    - TP recalculate จาก actual_entry × tp_rr ratio เดิม
+    """
+    direction = direction.upper()
+    risk = abs(actual_entry - sl)
+
+    if risk <= 0:
+        return {"valid": False, "reason": "risk=0 (entry==sl)"}
+
+    rr = abs(tp_rr)  # กัน negative
+
+    if direction == "LONG":
+        tp1 = actual_entry + risk * 1.0
+        tp2 = actual_entry + risk * rr
+        tp3 = actual_entry + risk * 2.0
+    else:
+        tp1 = actual_entry - risk * 1.0
+        tp2 = actual_entry - risk * rr
+        tp3 = actual_entry - risk * 2.0
+
+    actual_rr = abs(tp2 - actual_entry) / risk
+
+    return {
+        "valid": True,
+        "entry": actual_entry,
+        "sl":    sl,
+        "tp1":   tp1,
+        "tp2":   tp2,
+        "tp3":   tp3,
+        "rr":    round(actual_rr, 2),
+        "risk":  round(risk, 6),
+    }
+
 
 def execute_signal(signal: dict) -> bool:
-    symbol    = signal["symbol"]
-    direction = signal["direction"]
-    entry     = float(signal["trade_plan"]["entry"])
-    sl        = float(signal["trade_plan"]["sl"])
-    tp3       = float(signal["trade_plan"]["tp3"])
+    symbol     = signal["symbol"]
+    direction  = signal["direction"]
+    trade_plan = signal["trade_plan"]
+
+    entry_est = float(trade_plan["entry"])
+    sl_orig   = float(trade_plan["sl"])
+    tp2_orig  = float(trade_plan["tp2"])
 
     open_side = "BUY" if direction == "LONG" else "SELL"
-    close_side = "SELL" if open_side == "BUY" else "BUY"   # ✅ เพิ่ม
 
+    # ── กันเปิดซ้ำ ──
     if get_active(symbol, TIMEFRAME):
-        print(f"⚠️ [{symbol}] มี position อยู่แล้ว ไม่เปิดซ้ำ", flush=True)
+        print(f"⚠️ [{symbol}] มี position อยู่แล้ว")
         return False
 
+    # ── คำนวณ quantity จาก estimated entry ──
     balance  = get_balance()
-    quantity = calculate_quantity(balance, RISK_PCT, entry, sl)
+    quantity = calculate_quantity(balance, RISK_PCT, entry_est, sl_orig)
+    if quantity <= 0:
+        print(f"❌ [{symbol}] quantity = 0 (ยอดไม่พอหรือ SL ชิดเกิน)")
+        return False
 
+    # ── เตรียม leverage / margin ──
     set_margin_type(symbol, "ISOLATED")
     set_leverage(symbol, 10)
 
-    order = open_market_order(symbol, open_side, quantity)  # ✅ ใช้ open_side
+    # ── เปิดออเดอร์ ──
+    order = open_market_order(symbol, open_side, quantity)
     order_id = order.get("orderId")
-    if order_id is None:
-        print("❌ ไม่ได้รับ orderId", flush=True)
-        return False
-    print(f"✅ Order เปิดแล้ว orderId={order_id}", flush=True)
-
-    # ✅ ตั้ง SL ต้องใช้ close_side
-    try:
-        set_stop_loss(symbol, close_side, quantity, sl)
-        print(f"✅ SL ตั้งแล้ว {sl}", flush=True)
-    except Exception as e:
-        print(f"❌ SL ล้มเหลว: {e}", flush=True)
+    if not order_id:
+        print(f"❌ [{symbol}] เปิดออเดอร์ไม่สำเร็จ")
         return False
 
-    # ✅ ตั้ง TP ต้องใช้ close_side
-    try:
-        set_take_profit(symbol, close_side, quantity, tp3)
-        print(f"✅ TP ตั้งแล้ว {tp3}", flush=True)
-    except Exception as e:
-        print(f"⚠️ TP ล้มเหลว: {e}", flush=True)
+    # ── ดึง fill price จริง ──
+    actual_entry = _get_actual_entry(order, entry_est)
+    slip_pct = abs(actual_entry - entry_est) / entry_est * 100 if entry_est > 0 else 0
+    print(f"✅ [{symbol}] fill = {actual_entry:.6f} | est = {entry_est:.6f} | slip = {slip_pct:.3f}%")
 
+    # ── คำนวณ tp_rr ratio จาก estimated plan ──
+    risk_est = abs(entry_est - sl_orig)
+    tp_rr = abs(tp2_orig - entry_est) / risk_est if risk_est > 0 else 1.618
+
+    # ── recalculate SL/TP จาก fill price จริง ──
+    plan = _recalculate_plan(
+        direction=direction,
+        actual_entry=actual_entry,
+        sl=sl_orig,
+        tp_rr=tp_rr,
+    )
+
+    # ── validate RR หลัง fill ──
+    if not plan["valid"]:
+        print(f"❌ [{symbol}] plan ไม่ valid: {plan['reason']} → ปิด position ทันที")
+        _emergency_close(symbol, direction, quantity)
+        return False
+
+    if plan["rr"] < MIN_RR_AFTER_FILL:
+        print(
+            f"❌ [{symbol}] RR หลัง fill = {plan['rr']} < {MIN_RR_AFTER_FILL} "
+            f"(slip={slip_pct:.3f}%) → ปิด position ทันที"
+        )
+        _emergency_close(symbol, direction, quantity)
+        return False
+
+    sl_final  = plan["sl"]
+    tp1_final = plan["tp1"]
+    tp2_final = plan["tp2"]
+    tp3_final = plan["tp3"]
+
+    print(f"📐 [{symbol}] RR = {plan['rr']} | risk = {plan['risk']} | SL = {sl_final:.6f} | TP3 = {tp3_final:.6f}")
+
+    # ── ตั้ง SL / TP บน exchange ──
+    try:
+        set_stop_loss(symbol, open_side, quantity, sl_final)
+        print(f"✅ [{symbol}] SL = {sl_final}")
+    except Exception as e:
+        print(f"❌ [{symbol}] ตั้ง SL ล้มเหลว: {e} → ปิด position ทันที")
+        _emergency_close(symbol, direction, quantity)
+        return False
+
+    try:
+        set_take_profit(symbol, open_side, quantity, tp3_final)
+        print(f"✅ [{symbol}] TP3 = {tp3_final}")
+    except Exception as e:
+        print(f"⚠️ [{symbol}] ตั้ง TP ล้มเหลว: {e} (SL ตั้งแล้ว — position ยังอยู่)")
+
+    # ── lock position ด้วย actual plan ──
     lock_new_position(
         symbol=symbol,
         timeframe=TIMEFRAME,
         direction=direction,
-        trade_plan=signal["trade_plan"],
+        trade_plan={
+            "entry": actual_entry,
+            "sl":    sl_final,
+            "tp1":   tp1_final,
+            "tp2":   tp2_final,
+            "tp3":   tp3_final,
+        },
     )
-    print(f"✅ [{symbol}] lock position สำเร็จ", flush=True)
 
+    print(f"🟢 [{symbol}] execute_signal สำเร็จ | direction={direction} | RR={plan['rr']}")
     return True
+
+
+def _emergency_close(symbol: str, direction: str, quantity: float) -> None:
+    """ปิด position ทันทีด้วย market order ฝั่งตรงข้าม"""
+    close_side = "SELL" if direction == "LONG" else "BUY"
+    try:
+        open_market_order(symbol, close_side, quantity)
+        print(f"🔴 [{symbol}] ปิด position (emergency close) สำเร็จ")
+    except Exception as e:
+        print(f"🚨 [{symbol}] emergency close ล้มเหลว! ต้องปิดมือ: {e}")
