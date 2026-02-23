@@ -16,8 +16,8 @@ import requests
 
 from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
 from app.config.wave_settings import TIMEFRAME
+from app.trading.binance_trader import get_balance, get_open_positions
 # from app.trading.trade_executor import execute_signal
-# from app.trading.binance_trader import get_balance, get_open_positions
 # from app.state.position_manager import get_active, _load_position, _key
 
 app = Flask(__name__)
@@ -141,20 +141,86 @@ pre::-webkit-scrollbar-thumb{background:var(--dim);border-radius:2px}
 </body>
 </html>"""
 
-# --- dashboard/execute/position_status คงเดิม (comment) ---
-# @app.route("/dashboard", methods=["GET"])
-# def dashboard():
-#     ...
-# @app.route("/dashboard/run", methods=["POST"])
-# def dashboard_run():
-#     ...
-# @app.route("/execute", methods=["POST"])
-# def execute():
-#     ...
-# @app.route("/position/status", methods=["GET"])
-# def position_status():
-#     ...
+# ------------------ DASHBOARD ------------------
 
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    token = request.args.get("token", "")
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    if token != expected:
+        return "FORBIDDEN - ใส่ ?token=YOUR_TOKEN", 403
+
+    try:
+        balance = f"{get_balance():.2f}"
+    except Exception as e:
+        balance = f"ERROR: {e}"
+
+    try:
+        positions = get_open_positions()
+        pos_html = ""
+        for p in positions:
+            sym = p["symbol"]
+            amt = p["positionAmt"]
+            pnl = float(p["unRealizedProfit"])
+            entry = p.get("entryPrice", "-")
+            pos_html += f"<div>{sym} | Amt: {amt} | Entry: {entry} | PNL: {pnl:.2f}</div>"
+        if not pos_html:
+            pos_html = "<div>NO ACTIVE POSITION</div>"
+    except Exception as e:
+        pos_html = f"<div>ERROR: {e}</div>"
+
+    html = DASHBOARD_HTML
+    html = html.replace("BALANCE_PLACEHOLDER", balance)
+    html = html.replace("POSITION_PLACEHOLDER", pos_html)
+    html = html.replace("LOG_PLACEHOLDER", "LIVE MODE")
+    html = html.replace("TOKEN_PLACEHOLDER", token)
+
+    return html
+
+
+@app.route("/dashboard/run", methods=["POST"])
+def dashboard_run():
+    token = request.form.get("token", "")
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    if token != expected:
+        return "FORBIDDEN", 403
+
+    threading.Thread(target=run_daily_wave_job).start()
+    return f'<meta http-equiv="refresh" content="3;url=/dashboard?token={token}">Running...'
+
+
+# ------------------ EXECUTE ------------------
+
+@app.route("/execute", methods=["POST"])
+def execute():
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+
+    payload = request.get_json(silent=True) or {}
+    return {"received": payload}, 200
+
+
+# ------------------ POSITION STATUS ------------------
+
+@app.route("/position/status", methods=["GET"])
+def position_status():
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+
+    symbol = request.args.get("symbol", "").upper()
+    if not symbol:
+        return {"error": "symbol required"}, 400
+
+    positions = get_open_positions()
+    for p in positions:
+        if p["symbol"] == symbol and float(p["positionAmt"]) != 0:
+            return {"symbol": symbol, "active": True}, 200
+
+    return {"symbol": symbol, "active": False}, 200
 
 @app.route("/")
 def health():
