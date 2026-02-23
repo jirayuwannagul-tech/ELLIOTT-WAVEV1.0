@@ -9,6 +9,18 @@ load_dotenv()
 os.environ["TZ"] = "Asia/Bangkok"
 
 import time
+
+# -------- BALANCE CACHE --------
+_balance_cache = {
+    "value": None,
+    "timestamp": 0
+}
+BALANCE_CACHE_SECONDS = 60
+
+# -------- SIMPLE RATE LIMIT --------
+_rate_limit = {}
+RATE_LIMIT_SECONDS = 3
+
 time.tzset()
 
 from flask import Flask, request
@@ -21,7 +33,6 @@ from app.trading.trade_executor import execute_signal
 # from app.state.position_manager import get_active, _load_position, _key
 
 app = Flask(__name__)
-_balance_cache = {"value": None, "ts": 0}
 
 from app.performance.dashboard import perf_bp
 app.register_blueprint(perf_bp)
@@ -150,8 +161,25 @@ def dashboard():
     if token != expected:
         return "FORBIDDEN - ใส่ ?token=YOUR_TOKEN", 403
 
+    # -------- RATE LIMIT --------
+    ip = request.remote_addr
+    now = time.time()
+
+    last = _rate_limit.get(ip, 0)
+    if now - last < RATE_LIMIT_SECONDS:
+        return "Too Many Requests", 429
+    _rate_limit[ip] = now
+
+    # -------- BALANCE CACHE --------
     try:
-        balance = f"{get_balance():.2f}"
+        if (
+            _balance_cache["value"] is None or
+            now - _balance_cache["timestamp"] > BALANCE_CACHE_SECONDS
+        ):
+            _balance_cache["value"] = get_balance()
+            _balance_cache["timestamp"] = now
+
+        balance = f"{_balance_cache['value']:.2f}"
     except Exception as e:
         balance = f"ERROR: {e}"
 
