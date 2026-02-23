@@ -17,7 +17,7 @@ import requests
 from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
 from app.config.wave_settings import TIMEFRAME
 from app.trading.binance_trader import get_balance, get_open_positions
-# from app.trading.trade_executor import execute_signal
+from app.trading.trade_executor import execute_signal
 # from app.state.position_manager import get_active, _load_position, _key
 
 app = Flask(__name__)
@@ -208,8 +208,8 @@ def execute():
         return "FORBIDDEN", 403
 
     payload = request.get_json(silent=True) or {}
-    return {"received": payload}, 200
-
+    execute_signal(payload)
+    return {"ok": True}, 200
 
 # ------------------ POSITION STATUS ------------------
 
