@@ -172,7 +172,16 @@ def dashboard():
     html = DASHBOARD_HTML
     html = html.replace("BALANCE_PLACEHOLDER", balance)
     html = html.replace("POSITION_PLACEHOLDER", pos_html)
-    html = html.replace("LOG_PLACEHOLDER", "LIVE MODE")
+
+    try:
+        log = subprocess.check_output(
+            ["journalctl", "-u", "elliott", "-n", "50", "--no-pager"],
+            text=True
+        )
+    except Exception as e:
+        log = f"LOG ERROR: {e}"
+
+    html = html.replace("LOG_PLACEHOLDER", log)
     html = html.replace("TOKEN_PLACEHOLDER", token)
 
     return html
