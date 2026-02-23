@@ -29,7 +29,6 @@ def execute_signal(signal: dict) -> bool:
     tp3       = float(signal["trade_plan"]["tp3"])
 
     open_side  = "BUY" if direction == "LONG" else "SELL"
-    close_side = "SELL" if open_side == "BUY" else "BUY"
 
     # กันเปิดซ้ำ
     if get_active(symbol, TIMEFRAME):
