@@ -1,16 +1,19 @@
 # app/trading/position_sizer.py
-# คำนวณขนาด position จากงบและ risk %
 
 def calculate_quantity(balance: float, risk_pct: float, entry: float, sl: float) -> float:
     """
-    balance  = ยอดเงินใน wallet (USDT)
-    risk_pct = % ที่ยอมเสียต่อไม้ เช่น 0.02 = 2%
+    balance  = เงินในพอร์ต (USDT)
+    risk_pct = % เสี่ยงต่อไม้ เช่น 0.5% = 0.005
     entry    = ราคาเข้า
     sl       = stop loss
-    return   = จำนวน coin ที่ซื้อ
+    return   = จำนวนเหรียญ (qty)
     """
+
     risk_amount = balance * risk_pct
     sl_distance = abs(entry - sl)
+
     if sl_distance <= 0:
         return 0.0
-    return round(risk_amount / sl_distance, 3)
+
+    qty = risk_amount / sl_distance
+    return round(qty, 6)

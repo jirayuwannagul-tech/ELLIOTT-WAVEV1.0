@@ -189,6 +189,12 @@ def backtest_symbol(
         is_vol_spike = bool(volume_spike(sub, length=20, multiplier=1.5))
         last_close = float(sub["close"].iloc[-1])
 
+        # --- HARD Compression Gate (ATR14 < ATR14_MA50) ---
+        atr = float(sub["atr14"].iloc[-1])
+        atr_ma50 = float(sub["atr14"].rolling(50).mean().iloc[-1]) if len(sub) >= 50 else 0.0
+        if atr_ma50 > 0 and atr >= atr_ma50:
+            continue
+
         scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
         if not scenarios:
             continue
@@ -323,6 +329,12 @@ def backtest_symbol_trades(
         is_vol_spike = bool(volume_spike(sub, length=20, multiplier=1.5))
         last_close = float(sub["close"].iloc[-1])
 
+        # --- HARD Compression Gate (ATR14 < ATR14_MA50) ---
+        atr = float(sub["atr14"].iloc[-1])
+        atr_ma50 = float(sub["atr14"].rolling(50).mean().iloc[-1]) if len(sub) >= 50 else 0.0
+        if atr_ma50 > 0 and atr >= atr_ma50:
+            continue
+
         scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
         if not scenarios:
             continue
@@ -408,8 +420,7 @@ def backtest_symbol_trades(
         else:
             skip_until_bar = (i + 1) + int(sim["bars"])
 
-    return {"symbol": symbol, "trades": trades}
-
+    return {"symbol": symbol, "trades": trades, "data": df}
 
 # ---------------------------------------------------------------------------
 # portfolio_simulator
@@ -473,7 +484,6 @@ def portfolio_simulator(
         "equity_R": round(equity, 2),
         "max_drawdown_R": round(max_dd, 2),
     }
-
 
 # ---------------------------------------------------------------------------
 # __main__
