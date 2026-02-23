@@ -1,19 +1,24 @@
+# app/main.py
 import sys
 import os
 import subprocess
 import threading
 from dotenv import load_dotenv
+
 load_dotenv()
 os.environ["TZ"] = "Asia/Bangkok"
+
 import time
 time.tzset()
+
 from flask import Flask, request
 import requests
+
 from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
-from app.config.wave_settings import TIMEFRAME   
-#from app.trading.trade_executor import execute_signal
-#from app.trading.binance_trader import get_balance, get_open_positions
-#from app.state.position_manager import get_active, _load_position, _key
+from app.config.wave_settings import TIMEFRAME
+# from app.trading.trade_executor import execute_signal
+# from app.trading.binance_trader import get_balance, get_open_positions
+# from app.state.position_manager import get_active, _load_position, _key
 
 app = Flask(__name__)
 _balance_cache = {"value": None, "ts": 0}
@@ -61,25 +66,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .panel .c2{bottom:0;right:0;border-width:0 1px 1px 0}
 .panel-title{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border);text-shadow:0 0 10px rgba(0,245,255,0.5)}
 .panel-title::before{content:'';width:2px;height:12px;background:var(--cyan);box-shadow:0 0 8px var(--cyan);flex-shrink:0}
-
-/* ✅ เพิ่มคลาสตัวเลขให้คม + ชิดเท่ากัน */
-.num{
-  font-family:'Share Tech Mono',monospace;
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1;
-  letter-spacing: 1px;
-}
-
-/* ✅ เปลี่ยนฟอนต์ Balance ให้ตัวเลขอ่านง่าย */
-.balance{
-  font-family:'Share Tech Mono',monospace;
-  font-size:44px;
-  font-weight:700;
-  color:var(--green);
-  text-shadow:0 0 20px rgba(0,255,157,0.4);
-  letter-spacing:1px;
-}
-
+.num{font-family:'Share Tech Mono',monospace;font-variant-numeric: tabular-nums;font-feature-settings: "tnum" 1;letter-spacing: 1px;}
+.balance{font-family:'Share Tech Mono',monospace;font-size:44px;font-weight:700;color:var(--green);text-shadow:0 0 20px rgba(0,255,157,0.4);letter-spacing:1px;}
 .balance-unit{font-size:14px;opacity:0.5;margin-left:6px}
 .pos-row{padding:10px 0;border-bottom:1px solid rgba(0,245,255,0.05);font-size:11px;line-height:1.8}
 .pos-row:last-child{border-bottom:none}
@@ -153,68 +141,25 @@ pre::-webkit-scrollbar-thumb{background:var(--dim);border-radius:2px}
 </body>
 </html>"""
 
+# --- dashboard/execute/position_status คงเดิม (comment) ---
 # @app.route("/dashboard", methods=["GET"])
 # def dashboard():
-#     token = request.args.get("token", "")
-#     expected = (os.getenv("EXEC_TOKEN") or "").strip()
-#     if token != expected:
-#         return "FORBIDDEN - ใส่ ?token=YOUR_TOKEN", 403
-
-#     try:
-#         now = time.time()
-#         if now - _balance_cache["ts"] > 300:
-#             _balance_cache["value"] = get_balance()
-#             _balance_cache["ts"] = now
-#         balance = f"{_balance_cache['value']:.2f}"
-#     except Exception:
-#         balance = "เชื่อมต่อไม่ได้"
-
-#     try:
-#         positions = get_open_positions()
-#         pos_html = ""
-#         for p in positions:
-#             sym = p["symbol"]
-#             amt = p["positionAmt"]
-#             pnl = float(p["unRealizedProfit"])
-#             color = "green" if pnl >= 0 else "red"
-#             db_pos = _load_position(_key(sym, TIMEFRAME))
-#             sl = f"{float(db_pos.get('sl',0)):,.4f}" if db_pos else "-"
-#             tp3 = f"{float(db_pos.get('tp3',0)):,.4f}" if db_pos else "-"
-#             entry_price = f"{float(p.get('entryPrice',0)):,.4f}"
-#             direction = p.get("positionSide", "-")
-#             pos_html += f'<div class="pos-row"><span class="pos-sym">{sym}</span> | {direction} | Entry: {entry_price} | SL: {sl} | TP3: {tp3} | PNL: <span class="pnl-{color}">{pnl:.2f} USDT</span></div>'
-#         if not pos_html:
-#             pos_html = '<div class="empty-pos">NO ACTIVE POSITIONS</div>'
-#     except Exception:
-#         pos_html = "<p>ดึงข้อมูลไม่ได้</p>"
-
-#     try:
-#         log = subprocess.check_output(
-#             ["journalctl", "-u", "elliott", "-n", "50", "--no-pager"],
-#             text=True
-#         )
-#     except Exception:
-#         log = "ไม่พบ log"
-
-#     html = DASHBOARD_HTML
-#     html = html.replace("BALANCE_PLACEHOLDER", balance)
-#     html = html.replace("POSITION_PLACEHOLDER", pos_html)
-#     html = html.replace("LOG_PLACEHOLDER", log)
-#     html = html.replace("TOKEN_PLACEHOLDER", token)
-#     return html
-
+#     ...
 # @app.route("/dashboard/run", methods=["POST"])
 # def dashboard_run():
-#     token = request.form.get("token", "")
-#     expected = (os.getenv("EXEC_TOKEN") or "").strip()
-#     if token != expected:
-#         return "FORBIDDEN", 403
-#     threading.Thread(target=run_daily_wave_job).start()
-#     return f'<meta http-equiv="refresh" content="3;url=/dashboard?token={token}">Running...'
+#     ...
+# @app.route("/execute", methods=["POST"])
+# def execute():
+#     ...
+# @app.route("/position/status", methods=["GET"])
+# def position_status():
+#     ...
+
 
 @app.route("/")
 def health():
     return "OK", 200
+
 
 @app.route("/debug/ip")
 def debug_ip():
@@ -224,10 +169,12 @@ def debug_ip():
         return {"ok": False, "error": str(e)}, 500
     return {"ok": True, "ipv4": ipv4}, 200
 
+
 @app.route("/trend-watch", methods=["POST"])
 def trend_watch():
     run_trend_watch_job(min_conf=65.0)
     return "OK", 200
+
 
 @app.route("/run-daily", methods=["POST"])
 def run_daily():
@@ -238,86 +185,6 @@ def run_daily():
     run_daily_wave_job()
     return "OK", 200
 
-# @app.route("/execute", methods=["POST"])
-# def execute():
-#     expected = (os.getenv("EXEC_TOKEN") or "").strip()
-#     got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
-#     if expected and got != expected:
-#         return "FORBIDDEN", 403
-
-#     payload = request.get_json(silent=True) or {}
-
-#     # --- normalize fields ---
-#     symbol = (payload.get("symbol") or "").upper().strip()
-#     direction = (payload.get("direction") or "").upper().strip()
-
-#     if not symbol:
-#         return {"ok": False, "reason": "symbol required"}, 400
-#     if direction not in ("LONG", "SHORT"):
-#         return {"ok": False, "reason": "direction must be LONG/SHORT"}, 400
-
-#     # --- if trade_plan missing, create minimal trade_plan from flat fields ---
-#     # accept both styles:
-#     # 1) {symbol,direction, trade_plan:{entry,sl,tp1,tp2,tp3,leverage,qty_usdt}}
-#     # 2) {symbol,direction, entry, sl, tp1, tp2, tp3, leverage, qty_usdt}
-#     tp = payload.get("trade_plan")
-#     if not isinstance(tp, dict):
-#         tp = {}
-
-#     # fill from flat keys if not present
-#     for k, flat in [
-#         ("entry", "entry"),
-#         ("sl", "sl"),
-#         ("tp1", "tp1"),
-#         ("tp2", "tp2"),
-#         ("tp3", "tp3"),
-#         ("leverage", "leverage"),
-#         ("qty_usdt", "qty_usdt"),
-#     ]:
-#         if k not in tp and flat in payload:
-#             tp[k] = payload.get(flat)
-
-#     # validate required minimal
-#     if tp.get("entry") is None:
-#         return {"ok": False, "reason": "trade_plan.entry required"}, 400
-
-#     # rebuild signal to what execute_signal expects
-#     signal = dict(payload)
-#     signal["symbol"] = symbol
-#     signal["direction"] = direction
-#     signal["trade_plan"] = tp
-
-#     # ✅ เช็ค Binance จริงก่อนเปิดซ้ำ
-#     try:
-#         real_positions = get_open_positions()
-#         symbols_open = [p.get("symbol") for p in real_positions]
-#         if symbol in symbols_open:
-#             print(f"⚠️ [{symbol}] มี position บน Binance อยู่แล้ว ไม่เปิดซ้ำ", flush=True)
-#             return {"ok": False, "reason": "position already open on Binance"}, 200
-#     except Exception as e:
-#         print(f"⚠️ เช็ค Binance ล้มเหลว: {e} — เปิดต่อปกติ", flush=True)
-
-#     try:
-#         ok = execute_signal(signal)
-#         return {"ok": bool(ok)}, 200
-#     except Exception as e:
-#         # กัน 500 แบบอ่านง่าย
-#         print(f"❌ execute_signal error: {e}", flush=True)
-#         return {"ok": False, "reason": str(e)}, 500
-
-# @app.route("/position/status", methods=["GET"])
-# def position_status():
-#     expected = (os.getenv("EXEC_TOKEN") or "").strip()
-#     got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
-#     if expected and got != expected:
-#         return "FORBIDDEN", 403
-
-#     symbol = request.args.get("symbol", "").upper()
-#     if not symbol:
-#         return {"error": "symbol required"}, 400
-
-#     active = get_active(symbol, TIMEFRAME)
-#     return {"symbol": symbol, "active": active is not None}, 200
 
 @app.route("/log", methods=["POST"])
 def receive_log():
@@ -329,6 +196,38 @@ def receive_log():
     msg = payload.get("msg", "")
     print(f"[RAILWAY] {msg}", flush=True)
     return {"ok": True}, 200
+
+
+# ✅ FIX: ใส่ token กันคนสุ่มยิง attach SL/TP
+@app.route("/debug/attach-sl-tp/<symbol>")
+def debug_attach(symbol: str):
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.args.get("token") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+
+    from app.trading.binance_trader import get_open_positions, set_stop_loss, set_take_profit
+
+    symbol = (symbol or "").upper().strip()
+    positions = get_open_positions()
+
+    for p in positions:
+        if p.get("symbol") == symbol and float(p.get("positionAmt", 0)) != 0:
+            amt = float(p["positionAmt"])
+            mark = float(p.get("markPrice", 0) or 0)
+            side = "BUY" if amt > 0 else "SELL"  # ✅ side = ฝั่งเปิด (open_side)
+
+            # ตัวอย่างชั่วคราว
+            sl = mark * (0.5 if amt > 0 else 1.5)
+            tp = mark * (1.5 if amt > 0 else 0.5)
+
+            set_stop_loss(symbol, side, abs(amt), sl)
+            set_take_profit(symbol, side, abs(amt), tp)
+
+            return f"OK attached SL/TP to {symbol}", 200
+
+    return "NO ACTIVE POSITION", 404
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "run":
