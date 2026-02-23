@@ -13,7 +13,7 @@ from app.config.wave_settings import (
 from app.analysis.wave_engine import analyze_symbol
 from app.config.wave_settings import TIMEFRAME
 from app.services.telegram_reporter import format_symbol_report, send_message
-from app.trading.binance_trader import get_balance
+#from app.trading.binance_trader import get_balance
 
 def _check_position_from_vps(symbol: str) -> bool:
     """ถาม VPS ว่ามี position เปิดอยู่ไหม"""
@@ -39,11 +39,12 @@ def _fmt_price(x: float) -> str:
 def run_daily_wave_job():
     print(f"=== START DAILY WAVE JOB | tf={TIMEFRAME} | symbols={len(SYMBOLS)} ===", flush=True)
 
-    try:
-        balance = get_balance()
-        print(f"✅ Binance พร้อม | ยอด USDT = {balance:.2f}", flush=True)
-    except Exception as e:
-        print(f"❌ Binance เชื่อมต่อไม่ได้: {e}", flush=True)
+    # try:
+    #     balance = get_balance()
+    #     print(f"✅ Binance พร้อม | ยอด USDT = {balance:.2f}", flush=True)
+    # except Exception as e:
+    #     print(f"❌ Binance เชื่อมต่อไม่ได้: {e}", flush=True)
+    print("✅ Binance: SKIP (LOCAL MODE)", flush=True)
 
     found = 0
     found_symbols = []
@@ -118,11 +119,11 @@ def run_daily_wave_job():
     if errors:
         summary.append(f"⚠️ errors: {errors}")
 
-    try:
-        balance = get_balance()
-        summary.append(f"💰 ยอด USDT: {balance:.2f}")
-    except Exception:
-        pass
+    # try:
+    #     balance = get_balance()
+    #     summary.append(f"💰 ยอด USDT: {balance:.2f}")
+    # except Exception:
+    #     pass
 
     # ✅ เพิ่มตรงนี้
     summary.append("")

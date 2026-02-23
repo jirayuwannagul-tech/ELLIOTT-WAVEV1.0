@@ -128,13 +128,13 @@ def label_pivot_chain(pivots: List[Dict]) -> Dict:
         "reasons": best.reasons,
         # ✅ ส่ง pivot prices มาด้วย (ย่อ)
         "pivots": [
-            {
-                "index": int(p.get("index")),
-                "type": p.get("type"),
-                "price": float(p.get("price")),
-            }
-            for p in (best.pivots or [])
-        ],
+    {
+        "index": int(p.get("index") or 0),
+        "type": p.get("type"),
+        "price": float(p.get("price") or 0),
+    }
+    for p in (best.pivots or [])
+],
     }
 
     return {"label": label, "matches": matches}

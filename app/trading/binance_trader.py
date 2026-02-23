@@ -107,52 +107,72 @@ def open_market_order(symbol: str, side: str, quantity: float) -> dict:
     r.raise_for_status()
     return r.json()
 
-
 def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> dict:
+    """
+    SL แบบ Algo Order (CONDITIONAL) -> /fapi/v1/algoOrder
+    - One-way: ไม่ส่ง positionSide
+    - Hedge: ต้องส่ง positionSide ให้ตรง (LONG/SHORT)
+    """
     api_key, secret = _get_keys()
+
+    # side ที่รับเข้ามาควรเป็น "BUY" (เปิด LONG) หรือ "SELL" (เปิด SHORT)
     close_side = "SELL" if side == "BUY" else "BUY"
-    position_side = "LONG" if side == "BUY" else "SHORT"
+
     params: dict[str, Any] = {
         "algoType":      "CONDITIONAL",
         "symbol":        symbol,
         "side":          close_side,
-        "positionSide":  position_side,
         "type":          "STOP_MARKET",
         "triggerPrice":  sl_price,
         "closePosition": "true",
         "workingType":   "CONTRACT_PRICE",
         "timestamp":     int(time.time() * 1000),
     }
+
+    # ✅ ส่ง positionSide เฉพาะ Hedge mode เพื่อกัน -4061
+    if IS_HEDGE_MODE:
+        params["positionSide"] = "LONG" if side == "BUY" else "SHORT"
+
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
+
     r = requests.post(f"{FUTURES_URL}/fapi/v1/algoOrder", params=params, headers=headers, timeout=10)
     print(f"SL response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
 
-
 def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) -> dict:
+    """
+    TP แบบ Algo Order (CONDITIONAL) -> /fapi/v1/algoOrder
+    - One-way: ไม่ส่ง positionSide
+    - Hedge: ต้องส่ง positionSide ให้ตรง (LONG/SHORT)
+    """
     api_key, secret = _get_keys()
+
     close_side = "SELL" if side == "BUY" else "BUY"
-    position_side = "LONG" if side == "BUY" else "SHORT"
+
     params: dict[str, Any] = {
         "algoType":      "CONDITIONAL",
         "symbol":        symbol,
         "side":          close_side,
-        "positionSide":  position_side,
         "type":          "TAKE_PROFIT_MARKET",
         "triggerPrice":  tp_price,
         "closePosition": "true",
         "workingType":   "CONTRACT_PRICE",
         "timestamp":     int(time.time() * 1000),
     }
+
+    # ✅ ส่ง positionSide เฉพาะ Hedge mode เพื่อกัน -4061
+    if IS_HEDGE_MODE:
+        params["positionSide"] = "LONG" if side == "BUY" else "SHORT"
+
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
+
     r = requests.post(f"{FUTURES_URL}/fapi/v1/algoOrder", params=params, headers=headers, timeout=10)
     print(f"TP response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
-
 
 def set_leverage(symbol: str, leverage: int = 10) -> None:
     api_key, secret = _get_keys()
