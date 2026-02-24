@@ -189,22 +189,24 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     atr_ma50 = float(df["atr14"].rolling(50).mean().iloc[-1]) if len(df) >= 50 else 0.0
 
     if atr_ma50 > 0 and atr >= atr_ma50:
-        # ตลาดยังไม่ compress → ไม่เข้าเงื่อนไข (return base payload)
-        return {
-            "symbol": symbol,
-            "price": float(df["close"].iloc[-1]),
-            "scenarios": [],
-            "message": "ATR_GATE: ตลาดยังไม่ compress",
-            "mode": detect_market_mode(df),
-            "macro_trend": trend_filter_ema(df),
-            "rsi14": float(df["rsi14"].iloc[-1]),
-            "volume_spike": False,
-            "mtf": {},
-            "wave_label": {"label": None, "matches": []},
-            "sideway": None,
-            "zones": [],
-            "sr": {},
-            "position_size_mult": 1.0,
+        if (os.getenv("BYPASS_ATR_GATE", "") or "").lower() in ("1","true","yes"):
+            pass  # debug only: allow scenarios generation
+        else:
+            return {
+                "symbol": symbol,
+                "price": float(df["close"].iloc[-1]),
+                "scenarios": [],
+                "message": "ATR_GATE: ตลาดยังไม่ compress",
+                "mode": detect_market_mode(df),
+                "macro_trend": trend_filter_ema(df),
+                "rsi14": float(df["rsi14"].iloc[-1]),
+                "volume_spike": False,
+                "mtf": {},
+                "wave_label": {"label": None, "matches": []},
+                "sideway": None,
+                "zones": [],
+                "sr": {},
+                "position_size_mult": 1.0,
         }
 
     last_close = float(df["close"].iloc[-1])
@@ -339,7 +341,11 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         # ให้ RR filter ทำงานตามปกติ
 
         # LIVE: Hard filter = weekly_ok + trade_plan.valid
-        allowed_to_trade = bool(weekly_ok and trade_plan.get("valid") is True)
+        allowed_to_trade = bool(
+            weekly_ok
+            and mtf_ok
+            and trade_plan.get("valid") is True
+        )
 
         # --- Trigger logic ---
         if not allowed_to_trade:
@@ -384,6 +390,8 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             blocked.append("h4_confirm_block")
         if not context_allowed:
             blocked.append("context_gate_block")
+        if not trade_plan.get("valid"):
+            blocked.append("rr_or_plan_invalid")
 
         status = "READY" if (trade_plan.get("valid") and trade_plan.get("allowed_to_trade")) else "BLOCKED"
 

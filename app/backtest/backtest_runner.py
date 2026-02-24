@@ -64,20 +64,41 @@ def _simulate_one_trade(
     """
     เดินแท่งจาก start_i ไปข้างหน้า จนเจอ SL หรือ TP3
     - เช็ค SL ก่อนเสมอ (conservative)
+    - ถ้าแตะ TP1 ก่อน → ย้าย SL ไป breakeven (entry)
+    - ถ้าโดน SL หลังจากแตะ TP1 → result = BE
     - ถ้าครบ df โดยไม่เจอ SL/TP → OPEN
     """
+    tp1_hit = False
+
     for i in range(start_i, len(df)):
         high = float(df["high"].iloc[i])
         low = float(df["low"].iloc[i])
 
         if direction == "LONG":
+            # เมื่อถึง TP1 → ย้าย SL ไป breakeven
+            if (not tp1_hit) and (high >= tp1):
+                tp1_hit = True
+                sl = entry
+
+            # เช็ค SL ก่อนเสมอ
             if low <= sl:
-                return {"result": "LOSS", "exit": sl, "bars": i - start_i}
+                result = "BE" if tp1_hit else "LOSS"
+                return {"result": result, "exit": sl, "bars": i - start_i}
+
             if high >= tp3:
                 return {"result": "WIN", "exit": tp3, "bars": i - start_i}
+            
         else:  # SHORT
+            # เมื่อถึง TP1 → ย้าย SL ไป breakeven
+            if (not tp1_hit) and (low <= tp1):
+                tp1_hit = True
+                sl = entry
+
+            # เช็ค SL ก่อนเสมอ
             if high >= sl:
-                return {"result": "LOSS", "exit": sl, "bars": i - start_i}
+                result = "BE" if tp1_hit else "LOSS"
+                return {"result": result, "exit": sl, "bars": i - start_i}
+
             if low <= tp3:
                 return {"result": "WIN", "exit": tp3, "bars": i - start_i}
 
@@ -113,7 +134,7 @@ def _get_scenarios(sub: pd.DataFrame, macro_trend: str, rsi14: float, is_vol_spi
 
 
 def _r_multiple(direction: str, entry: float, sl: float, tp3: float, result: str) -> float:
-    """คิดผลเป็นหน่วย R: LOSS=-1R, WIN=+RR, OPEN=0"""
+    """คิดผลเป็นหน่วย R: LOSS=-1R, WIN=+RR, BE=0, OPEN=0"""
     risk = abs(entry - sl)
     if risk <= 0:
         return 0.0
@@ -122,6 +143,8 @@ def _r_multiple(direction: str, entry: float, sl: float, tp3: float, result: str
         return -1.0
     if result == "WIN":
         return float(rr_tp3)
+    if result == "BE":
+        return 0.0
     return 0.0
 
 
@@ -268,7 +291,7 @@ def backtest_symbol(
             i, direction, trades[-1]["confidence"], sim["result"],
         )
 
-        if sim["result"] in ("WIN", "LOSS"):
+        if sim["result"] in ("WIN", "LOSS", "BE"):
             in_position = False
         else:
             skip_until_bar = (i + 1) + int(sim["bars"])
@@ -278,8 +301,9 @@ def backtest_symbol(
 
     wins = sum(1 for t in trades if t["result"] == "WIN")
     losses = sum(1 for t in trades if t["result"] == "LOSS")
+    bes = sum(1 for t in trades if t["result"] == "BE")
     opens = sum(1 for t in trades if t["result"] == "OPEN")
-    total_closed = wins + losses
+    total_closed = wins + losses + bes
     winrate = round((wins / total_closed) * 100, 2) if total_closed > 0 else 0.0
 
     conf_values = [float(t.get("confidence") or 0) for t in trades]
@@ -292,6 +316,7 @@ def backtest_symbol(
         "trades": len(trades),
         "wins": wins,
         "losses": losses,
+        "be": bes,
         "open": opens,
         "winrate": winrate,
         "conf_min": conf_min,
@@ -403,7 +428,7 @@ def backtest_symbol_trades(
         # exit time
         exit_index: Optional[int] = None
         exit_time = None
-        if sim["result"] in ("WIN", "LOSS"):
+        if sim["result"] in ("WIN", "LOSS", "BE"):
             exit_index = start_i + int(sim["bars"])
             if 0 <= exit_index < len(df):
                 exit_time = df["open_time"].iloc[exit_index]
@@ -427,7 +452,7 @@ def backtest_symbol_trades(
             "r_multiple": r,
         })
 
-        if sim["result"] in ("WIN", "LOSS"):
+        if sim["result"] in ("WIN", "LOSS", "BE"):
             in_position = False
         else:
             skip_until_bar = (i + 1) + int(sim["bars"])
@@ -469,9 +494,10 @@ def portfolio_simulator(
 
     all_trades.sort(key=_safe_entry_time)
 
-    closed = [t for t in all_trades if t["result"] in ("WIN", "LOSS")]
+    closed = [t for t in all_trades if t["result"] in ("WIN", "LOSS", "BE")]
     wins = sum(1 for t in closed if t["result"] == "WIN")
     losses = sum(1 for t in closed if t["result"] == "LOSS")
+    bes = sum(1 for t in closed if t["result"] == "BE")    
     total = len(closed)
     winrate = round((wins / total) * 100, 2) if total > 0 else 0.0
 
@@ -494,6 +520,7 @@ def portfolio_simulator(
         "wins": wins,
         "losses": losses,
         "winrate": winrate,
+        "be": bes,
         "equity_R": round(equity, 2),
         "max_drawdown_R": round(max_dd, 2),
         "trades_detail": closed if return_trades_detail else None,
