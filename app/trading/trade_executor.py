@@ -21,7 +21,7 @@ from app.trading.position_sizer import calculate_quantity
 from app.state.position_manager import lock_new_position, get_active
 from app.config.wave_settings import TIMEFRAME
 
-RISK_PCT = 0.03   # เสี่ยง 3% ต่อไม้
+RISK_PCT = 0.1   # เสี่ยง 10% ต่อไม้
 MIN_RR_AFTER_FILL = 1.6  # RR ขั้นต่ำหลัง fill จริง
 
 
