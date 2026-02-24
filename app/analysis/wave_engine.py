@@ -207,7 +207,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
                 "zones": [],
                 "sr": {},
                 "position_size_mult": 1.0,
-        }
+            }
 
     last_close = float(df["close"].iloc[-1])
     current_price = last_close
@@ -351,23 +351,25 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         if not allowed_to_trade:
             trade_plan["triggered"] = False
         else:
-            stype = (scenario.get("type") or "").upper()
+            entry = trade_plan.get("entry")
+            if entry is not None:
+                entry = float(entry)
+                stype = (scenario.get("type") or "").upper()
 
-            # ABC: ถ้าผ่าน weekly + RR(valid) แล้ว ให้ถือว่า trigger ได้เลย
-            if stype in ("ABC_UP", "ABC_DOWN"):
-                trade_plan["triggered"] = True
-            else:
-                entry = trade_plan.get("entry")
-                if entry is None:
-                    trade_plan["triggered"] = False
+                # ✅ ABC: trigger ทันที
+                if stype == "ABC_UP":
+                    trade_plan["triggered"] = True
+                elif stype == "ABC_DOWN":
+                    trade_plan["triggered"] = True
                 else:
-                    entry = float(entry)
                     if direction == "LONG" and last_close <= entry:
                         trade_plan["triggered"] = False
                     elif direction == "SHORT" and last_close >= entry:
                         trade_plan["triggered"] = False
                     else:
                         trade_plan["triggered"] = True
+            else:
+                trade_plan["triggered"] = False
     
         trade_plan["allowed_to_trade"] = allowed_to_trade
         trade_plan["weekly_ok"] = weekly_ok
