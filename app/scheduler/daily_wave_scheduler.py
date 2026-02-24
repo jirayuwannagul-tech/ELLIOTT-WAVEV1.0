@@ -9,17 +9,20 @@ from app.config.wave_settings import (
     RUN_MINUTE,
     TIMEZONE,
     MAX_RETRY,
+    TIMEFRAME,
 )
 from app.analysis.wave_engine import analyze_symbol
-from app.config.wave_settings import TIMEFRAME
 from app.services.telegram_reporter import format_symbol_report, send_message
-#from app.trading.binance_trader import get_balance
+
 
 def _check_position_from_vps(symbol: str) -> bool:
     """ถาม VPS ว่ามี position เปิดอยู่ไหม"""
     try:
-        vps_url = os.getenv("VPS_URL", "")
-        exec_token = os.getenv("EXEC_TOKEN", "")
+        vps_url = (os.getenv("VPS_URL", "") or "").rstrip("/")
+        exec_token = os.getenv("EXEC_TOKEN", "") or ""
+        if not vps_url or not exec_token:
+            return False
+
         r = req.get(
             f"{vps_url}/position/status",
             params={"symbol": symbol},
@@ -27,23 +30,95 @@ def _check_position_from_vps(symbol: str) -> bool:
             timeout=5,
         )
         if r.status_code == 200:
-            return bool(r.json().get("active", False))
+            return bool((r.json() or {}).get("active", False))
         return False
     except Exception:
         return False
-    
+
+
 def _fmt_price(x: float) -> str:
     x = float(x)
     return f"{x:,.5f}" if x < 1 else f"{x:,.2f}"
 
+
+def _pct_near(a: float, b: float) -> float:
+    """abs(a-b)/b *100"""
+    if not b:
+        return 999.0
+    return abs((a - b) / b) * 100.0
+
+
+def _fallback_scenarios(analysis: dict) -> list:
+    """
+    fallback เมื่อ wave_engine ไม่คืน scenarios
+    - valid: บังคับ True (เพื่อให้มีโอกาสส่งเมื่อ triggered)
+    - triggered: ราคาใกล้ entry ภายใน ENTRY_TRIGGER_PCT (%)
+    """
+    wl = ((analysis.get("wave_label") or {}).get("label") or {}) if analysis else {}
+    direction = (wl.get("direction") or "").upper()
+    conf = float(wl.get("confidence") or 0)
+    price = float(analysis.get("price") or 0)
+
+    pivots = wl.get("pivots") or []
+    last_L = None
+    last_H = None
+    for p in pivots:
+        t = (p.get("type") or "").upper()
+        if t == "L":
+            last_L = p
+        elif t == "H":
+            last_H = p
+
+    entry = None
+    if direction == "LONG" and last_L:
+        entry = float(last_L.get("price") or 0)
+    elif direction == "SHORT" and last_H:
+        entry = float(last_H.get("price") or 0)
+
+    if not entry:
+        entry = price
+
+    trigger_pct = float(os.getenv("ENTRY_TRIGGER_PCT", "0.30"))  # default 0.30%
+    dist = _pct_near(price, entry)
+    triggered = (dist <= trigger_pct) if (price and entry) else False
+
+    # % มาตรฐาน: SL 3%, TP 3/5/7
+    sl_pct = float(os.getenv("SL_PCT", "3.0"))
+    tp1_pct = float(os.getenv("TP1_PCT", "3.0"))
+    tp2_pct = float(os.getenv("TP2_PCT", "5.0"))
+    tp3_pct = float(os.getenv("TP3_PCT", "7.0"))
+
+    if direction == "SHORT":
+        stop_loss = entry * (1.0 + sl_pct / 100.0)
+        tp1 = entry * (1.0 - tp1_pct / 100.0)
+        tp2 = entry * (1.0 - tp2_pct / 100.0)
+        tp3 = entry * (1.0 - tp3_pct / 100.0)
+    else:
+        direction = "LONG"
+        stop_loss = entry * (1.0 - sl_pct / 100.0)
+        tp1 = entry * (1.0 + tp1_pct / 100.0)
+        tp2 = entry * (1.0 + tp2_pct / 100.0)
+        tp3 = entry * (1.0 + tp3_pct / 100.0)
+
+    sc = {
+        "direction": direction,
+        "confidence": conf,
+        "trade_plan": {
+            "valid": True,  # ✅ ปลดล็อคตรงนี้
+            "triggered": bool(triggered),
+            "entry": float(entry),
+            "stop_loss": float(stop_loss),
+            "take_profit_1": float(tp1),
+            "take_profit_2": float(tp2),
+            "take_profit_3": float(tp3),
+            "dist_to_entry_pct": float(dist),
+            "source": "fallback_wave_label",
+        },
+    }
+    return [sc]
+
 def run_daily_wave_job():
     print(f"=== START DAILY WAVE JOB | tf={TIMEFRAME} | symbols={len(SYMBOLS)} ===", flush=True)
-
-    # try:
-    #     balance = get_balance()
-    #     print(f"✅ Binance พร้อม | ยอด USDT = {balance:.2f}", flush=True)
-    # except Exception as e:
-    #     print(f"❌ Binance เชื่อมต่อไม่ได้: {e}", flush=True)
     print("✅ Binance: SKIP (LOCAL MODE)", flush=True)
 
     found = 0
@@ -69,16 +144,28 @@ def run_daily_wave_job():
                 scenarios = analysis.get("scenarios", []) or []
                 sent = False
 
+                if not scenarios:
+                    wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
+                    print(
+                        f"[{symbol}] scenarios=0 | wave={wl.get('pattern')} {wl.get('direction')} conf={wl.get('confidence')}",
+                        flush=True
+                    )
+                    break
+
                 for sc in scenarios:
                     trade = sc.get("trade_plan", {}) or {}
 
-                    if not trade.get("valid"):
+                    status = (sc.get("status") or "").upper()
+                    allowed = bool(trade.get("allowed_to_trade", False))
+                    triggered = bool(trade.get("triggered", False))
+                    valid = bool(trade.get("valid", False))
+
+                    if status != "READY":
+                        continue
+                    if not (allowed and triggered and valid):
                         continue
 
-                    if trade.get("triggered") is not True:
-                        continue
-
-                    text = format_symbol_report(analysis)       
+                    text = format_symbol_report(analysis)
                     send_message(text)
 
                     print(f"[{symbol}] SENT signal", flush=True)
@@ -91,10 +178,7 @@ def run_daily_wave_job():
                 if not sent:
                     wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
                     print(
-                        f"[{symbol}] no triggered signal | "
-                        f"wave={wl.get('pattern')} "
-                        f"{wl.get('direction')} "
-                        f"conf={wl.get('confidence')}",
+                        f"[{symbol}] no READY signal | wave={wl.get('pattern')} {wl.get('direction')} conf={wl.get('confidence')}",
                         flush=True
                     )
 
@@ -108,7 +192,6 @@ def run_daily_wave_job():
                     break
                 time.sleep(2)
 
-    # ✅ สรุปเช้า: เจอ/ไม่เจอ
     summary = []
     summary.append(f"🕖 DAILY SUMMARY ({TIMEFRAME.upper()})")
     summary.append(f"สแกน: {len(SYMBOLS)} เหรียญ")
@@ -119,28 +202,17 @@ def run_daily_wave_job():
     if errors:
         summary.append(f"⚠️ errors: {errors}")
 
-    # try:
-    #     balance = get_balance()
-    #     summary.append(f"💰 ยอด USDT: {balance:.2f}")
-    # except Exception:
-    #     pass
-
-    # ✅ เพิ่มตรงนี้
     summary.append("")
     summary.append("────────────────────")
     summary.append("🔵 SYSTEM: ELLIOTT-WAVE")
     summary.append("Engine: 1D")
 
     send_message("\n".join(summary), topic_id=os.getenv("TOPIC_NORMAL_ID"))
-
     print("=== END DAILY WAVE JOB ===", flush=True)
-    
+
 def run_trend_watch_job(min_conf: float = 65.0):
     """
-    Trend Watch (19:00): ใช้ 1D scenarios (ไม่ต้อง triggered)
-    - ไม่ lock position
-    - ไม่ update position
-    - แจ้งเฉพาะเหรียญที่ confidence >= min_conf
+    Trend Watch: แจ้งเหรียญที่ confidence >= min_conf
     """
     print(f"=== START TREND WATCH | tf={TIMEFRAME} | min_conf={min_conf} ===", flush=True)
 
@@ -157,9 +229,8 @@ def run_trend_watch_job(min_conf: float = 65.0):
 
                 scenarios = analysis.get("scenarios", []) or []
                 if not scenarios:
-                    break
+                    scenarios = _fallback_scenarios(analysis)
 
-                # ใช้ scenario อันดับ 1 (คะแนนสูงสุดใน wave_engine)
                 sc = scenarios[0]
                 conf = float(sc.get("confidence") or 0)
                 if conf < float(min_conf):
@@ -172,7 +243,6 @@ def run_trend_watch_job(min_conf: float = 65.0):
                 entry = trade.get("entry")
                 entry = float(entry) if entry is not None else None
 
-                # ระยะห่างถึง entry (%)
                 dist = None
                 if entry and price:
                     dist = abs((entry - price) / price) * 100.0
@@ -195,18 +265,16 @@ def run_trend_watch_job(min_conf: float = 65.0):
                     break
                 time.sleep(1)
 
-    # เรียง: conf มากก่อน แล้ว dist ใกล้ก่อน
     picks.sort(key=lambda x: (-x["confidence"], x["dist"] if x["dist"] is not None else 1e9))
 
     lines = []
-    lines.append("📡 TREND WATCH (1D) — 19:00")
+    lines.append("📡 TREND WATCH (1D)")
     lines.append(f"เกณฑ์: Conf >= {int(min_conf)} | จำนวนที่น่าจับตา: {len(picks)}")
     lines.append("")
 
     if not picks:
-        lines.append("วันนี้ยังไม่มีเหรียญที่เข้าเกณฑ์ (รอดูแท่งปิด 1D ตามรอบปกติ)")
+        lines.append("วันนี้ยังไม่มีเหรียญที่เข้าเกณฑ์")
     else:
-        # กันยาวเกิน: ส่งแค่ TOP 10
         top = picks[:10]
         for i, p in enumerate(top, start=1):
             sym = p["symbol"]
@@ -229,7 +297,6 @@ def run_trend_watch_job(min_conf: float = 65.0):
         lines.append("")
         lines.append(f"⚠️ errors: {errors}")
 
-    # ✅ เพิ่มตรงนี้
     lines.append("")
     lines.append("────────────────────")
     lines.append("🔵 SYSTEM: ELLIOTT-WAVE")
@@ -238,17 +305,23 @@ def run_trend_watch_job(min_conf: float = 65.0):
     send_message("\n".join(lines), topic_id=os.getenv("TOPIC_NORMAL_ID"))
     print("=== END TREND WATCH ===", flush=True)
 
+
 def start_scheduler_loop():
     """
-    Loop เช็คเวลา 20:00 ไทย แล้วรันวันละครั้ง
+    Loop เช็คเวลา RUN_HOUR:RUN_MINUTE ไทย แล้วรันวันละครั้ง
     """
-    print("Wave Scheduler Started...")
+    print("Wave Scheduler Started...", flush=True)
+
+    last_run_date = None  # กันรันซ้ำทั้งวัน
 
     while True:
         now = datetime.now(TIMEZONE)
 
         if now.hour == RUN_HOUR and now.minute == RUN_MINUTE:
-            run_daily_wave_job()
+            today = now.date()
+            if last_run_date != today:
+                run_daily_wave_job()
+                last_run_date = today
             time.sleep(60)  # กันรันซ้ำในนาทีเดียวกัน
 
         time.sleep(20)

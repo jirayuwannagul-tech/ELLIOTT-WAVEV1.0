@@ -74,7 +74,6 @@ def compute_macro_bias(regime: Dict, rsi14: float = 50.0) -> Dict:
             strength -= 5.0
 
     # ---- volatility penalty (กันมั่วใน vol สูง) ----
-    # vol_score: LOW 25 / MID 55 / HIGH 80 (จาก market_regime)
     if vol_score >= 75:
         strength -= 8.0
     elif vol_score <= 30:
@@ -83,13 +82,15 @@ def compute_macro_bias(regime: Dict, rsi14: float = 50.0) -> Dict:
     strength = _clamp(strength)
 
     # ---- allow gates ----
-    # กติกา: ถ้า bias ชัด (>=60) ให้ “ปิดฝั่งสวน” เลย
+    # FIX: ลด threshold จาก 60 → 50
+    # เดิม strength>=60 แทบไม่เคยถึง → allow_long/allow_short เป็น True ตลอด
+    # ใหม่ strength>=50 ทำให้ TREND regime ที่มี bias ชัดบล็อกฝั่งสวนได้จริง
     allow_long = True
     allow_short = True
 
-    if bias == "LONG" and strength >= 60:
+    if bias == "LONG" and strength >= 50:
         allow_short = False
-    if bias == "SHORT" and strength >= 60:
+    if bias == "SHORT" and strength >= 50:
         allow_long = False
 
     mb = MacroBias(

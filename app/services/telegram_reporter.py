@@ -78,12 +78,52 @@ def format_symbol_report(analysis: dict) -> str:
     # Pivot list format
     pivot_lines = []
     for i, p in enumerate(pivots, start=1):
-        pivot_lines.append(
-            f"{i}) {p.get('type')} { _fmt_price(p.get('price')) }"
-        )
-
+        pivot_lines.append(f"{i}) {p.get('type')} { _fmt_price(p.get('price')) }")
     pivot_text = "\n".join(pivot_lines) if pivot_lines else "-"
 
+    # ===== ✅ NEW: สถานะ/เหตุผลการบล็อก =====
+    status = (sc.get("status") or "").upper()  # READY / WAIT / BLOCKED (จาก wave_engine)
+    blocked = sc.get("blocked_reasons") or []
+
+    # fallback เผื่อยังไม่มี status
+    allowed = bool(trade.get("allowed_to_trade", True))
+    triggered = bool(trade.get("triggered", False))
+
+    if not status:
+        if triggered and allowed:
+            status = "READY"
+        elif not allowed:
+            status = "BLOCKED"
+        else:
+            status = "WAIT"
+
+    if status == "BLOCKED" and not blocked:
+        # fallback reasons จาก flag เดิม
+        if sc.get("mtf_ok") is False or trade.get("mtf_ok") is False:
+            blocked.append("h4_confirm_block")
+        if sc.get("context_allowed") is False or trade.get("context_allowed") is False:
+            blocked.append("context_gate_block")
+        if sc.get("weekly_ok") is False or trade.get("weekly_ok") is False:
+            blocked.append("weekly_permit_block")
+
+    reason_map = {
+        "h4_confirm_block": "❌ 4H ยังไม่ยืนยัน",
+        "context_gate_block": "❌ Context gate บล็อก",
+        "weekly_permit_block": "❌ Weekly permit บล็อก",
+    }
+    blocked_lines = []
+    for r in blocked:
+        blocked_lines.append(reason_map.get(str(r), f"❌ {r}"))
+    blocked_text = "\n".join(blocked_lines) if blocked_lines else "-"
+
+    if status == "READY":
+        status_line = "พร้อมเข้า (TRIGGERED)"
+    elif status == "WAIT":
+        status_line = "รอการยืนยัน (WAIT)"
+    else:
+        status_line = "ถูกบล็อก (BLOCKED)"
+
+    # ===== report text =====
     text = f"""
 ════════════════════════════
 👑 VIP รายงานเชิงลึก — {symbol} (1D)
@@ -129,11 +169,11 @@ TP3: {_fmt_price(tp3) if tp3 else '-'}
 แนวต้านใกล้สุด: {_fmt_price(resist) if resist else '-'}
 
 ────────────────────
-สถานะสัญญาณ: {"พร้อมเข้า (TRIGGERED)" if trade.get("triggered") else "รอการยืนยัน (WAIT)"}
-ระบบจะปิดสถานะเมื่อ:
-- ถึง SL หรือ
-- ถึง TP3 เท่านั้น
+สถานะสัญญาณ: {status_line}
+เหตุผล/เงื่อนไขที่ติด:
+{blocked_text}
 ════════════════════════════
 """.strip()
+
     footer = "\n\n────────────────────\n🔵 SYSTEM: ELLIOTT-WAVE\nEngine: 1D\n"
     return text + footer

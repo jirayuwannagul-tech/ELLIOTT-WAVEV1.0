@@ -50,7 +50,7 @@ def build_scenarios(
     rsi14: float = 50.0,
     volume_spike: bool = False
 ) -> List[Dict]:
-    scenarios = []
+    scenarios: List[Dict] = []
 
     # Scenario 1: Impulse LONG
     if len(pivots) >= 6:
@@ -105,6 +105,29 @@ def build_scenarios(
                 "reasons": warnings_up,
                 "pivots": last4,
             })
+
+    # ✅ FIX: ถ้าไม่มี scenario แต่มี pivots พอแล้ว -> สร้าง fallback ขั้นต่ำ
+    # เพื่อไม่ให้ scenarios=0 (ให้ระบบไปตัด READY/BLOCKED ใน wave_engine แทน)
+    if not scenarios and len(pivots) >= 4:
+        last4 = pivots[-4:]
+        fb_reasons = ["fallback: rules not satisfied yet (keep watching)"]
+
+        scenarios.append({
+            "type": "ABC_UP",
+            "phase": "Fallback (watchlist)",
+            "direction": "LONG",
+            "score": score_scenario(50, fb_reasons, macro_trend, rsi14, volume_spike, direction="LONG"),
+            "reasons": fb_reasons,
+            "pivots": last4,
+        })
+        scenarios.append({
+            "type": "ABC_DOWN",
+            "phase": "Fallback (watchlist)",
+            "direction": "SHORT",
+            "score": score_scenario(50, fb_reasons, macro_trend, rsi14, volume_spike, direction="SHORT"),
+            "reasons": fb_reasons,
+            "pivots": last4,
+        })
 
     if not scenarios:
         return []

@@ -17,7 +17,7 @@ from app.indicators.ema import add_ema
 from app.indicators.rsi import add_rsi
 from app.indicators.atr import add_atr
 from app.indicators.volume import add_volume_ma, volume_spike
-from app.indicators.trend_filter import trend_filter_ema, allow_direction
+from app.indicators.trend_filter import trend_filter_ema
 
 from app.analysis.wave_labeler import label_pivot_chain
 from app.analysis.context_gate import apply_context_gate
@@ -26,7 +26,14 @@ from app.analysis.macro_bias import compute_macro_bias
 from app.analysis.multi_tf import get_mtf_summary
 from app.analysis.zones import build_zones_from_pivots, nearest_support_resist
 from app.analysis.trend_detector import detect_market_mode
-from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR, MIN_CONFIDENCE_LIVE, ABC_CONFIRM_BUFFER
+from app.config.wave_settings import (
+    BARS,
+    TIMEFRAME,
+    MIN_RR,
+    MIN_CONFIDENCE_LIVE,
+    ABC_CONFIRM_BUFFER,
+)
+
 
 def _send_log(msg: str) -> None:
     try:
@@ -37,7 +44,7 @@ def _send_log(msg: str) -> None:
                 f"{vps_url}/log",
                 json={"msg": msg},
                 headers={"X-EXEC-TOKEN": exec_token},
-                timeout=5
+                timeout=5,
             )
     except Exception:
         pass
@@ -47,6 +54,18 @@ def _safe_float(x, default: float = 0.0) -> float:
         return float(x)
     except Exception:
         return default
+
+# ── ลบ _fallback_entry_from_pivots ──────────────────────────────────────────
+# เหตุผล: ใช้คู่กับ _force_minimal_trade_plan เท่านั้น ซึ่งถูกลบออกแล้ว
+# ถ้า build_trade_plan คืน entry=None → valid=False → BLOCKED ตามปกติ
+
+# ── ลบ _force_minimal_trade_plan ────────────────────────────────────────────
+# เหตุผล: bypass valid=True โดยไม่ผ่านการคำนวณ RR จริง
+#         ทำให้ F_RR_VALID ไม่มีผลเลยใน Live
+#         ลบออกเพื่อให้ RR filter ทำงานได้ตามปกติ
+
+# ── ลบ _ensure_basic_risk_levels ────────────────────────────────────────────
+# เหตุผล: ไม่ถูกเรียกใช้ที่ไหนใน codebase (dead code)
 
 def _range_levels(df: pd.DataFrame, lookback: int = 60) -> Dict:
     """คำนวณกรอบ sideway แบบง่ายจาก lookback ล่าสุด"""
@@ -71,10 +90,6 @@ def _range_levels(df: pd.DataFrame, lookback: int = 60) -> Dict:
 def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
     """
     SIDEWAY ENGINE (v0): mean-reversion ในกรอบ
-
-    เงื่อนไขเข้าแบบง่าย:
-    - LONG: ราคาใกล้ range_low + buffer และ RSI ต่ำ
-    - SHORT: ราคาใกล้ range_high - buffer และ RSI สูง
     """
     base = dict(base or {})
 
@@ -95,13 +110,11 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
         "lookback": 60,
     }
 
-    # ถ้าข้อมูลไม่พอ -> คืนแบบไม่ยิงสัญญาณ
     if not range_low or not range_high or range_high <= range_low:
         base["scenarios"] = []
         base["message"] = "SIDEWAY: ข้อมูลยังไม่พอคำนวณกรอบ"
         return base
 
-    # buffer กันหลอก: ใช้ ATR ถ้ามี ไม่งั้นใช้ 0.5% ของราคา
     buffer = float(atr) * 0.5 if atr and atr > 0 else float(price) * 0.005
 
     near_support = price <= (range_low + buffer)
@@ -109,7 +122,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
 
     scenarios: List[Dict] = []
 
-    # LONG near support + RSI low
     if near_support and rsi14 <= 45 and weekly_permit_long:
         sc = {
             "type": "SIDEWAY_RANGE",
@@ -117,7 +129,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
             "direction": "LONG",
             "probability": 0.0,
             "confidence": 65.0,
-            # ✅ ADD
             "range_low": range_low,
             "range_high": range_high,
             "atr": atr,
@@ -131,7 +142,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
         sc["trade_plan"] = plan
         scenarios.append(sc)
 
-    # SHORT near resist + RSI high
     if near_resist and rsi14 >= 55 and weekly_permit_short:
         sc = {
             "type": "SIDEWAY_RANGE",
@@ -139,7 +149,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
             "direction": "SHORT",
             "probability": 0.0,
             "confidence": 65.0,
-            # ✅ ADD
             "range_low": range_low,
             "range_high": range_high,
             "atr": atr,
@@ -156,26 +165,20 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
     base["scenarios"] = scenarios
 
     if scenarios:
-        base["message"] = (
-            f"SIDEWAY: พบ setup ในกรอบ ({range_low:,.2f} - {range_high:,.2f})"
-        )
+        base["message"] = f"SIDEWAY: พบ setup ในกรอบ ({range_low:,.2f} - {range_high:,.2f})"
     else:
-        base["message"] = (
-            f"SIDEWAY: ยังไม่เข้าเงื่อนไข (กรอบ {range_low:,.2f} - {range_high:,.2f})"
-        )
+        base["message"] = f"SIDEWAY: ยังไม่เข้าเงื่อนไข (กรอบ {range_low:,.2f} - {range_high:,.2f})"
 
     return base
 
 
 def analyze_symbol(symbol: str) -> Optional[Dict]:
-    # 1) Fetch data (1D)
     df = fetch_ohlcv(symbol, interval=TIMEFRAME, limit=BARS)
     df = drop_unclosed_candle(df)
 
-    if df is None or len(df) < 250:  # ต้องพอสำหรับ EMA200
+    if df is None or len(df) < 250:
         return None
 
-    # 1.5) Add indicators (1D)
     df = add_ema(df, lengths=(50, 200))
     df = add_rsi(df, length=14)
     df = add_atr(df, length=14)
@@ -186,15 +189,13 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     close_today = last_close
     close_yesterday = float(df["close"].iloc[-2]) if len(df) >= 2 else None
 
-    macro_trend = trend_filter_ema(df)  # BULL/BEAR/NEUTRAL (1D)
+    macro_trend = trend_filter_ema(df)
     rsi14 = float(df["rsi14"].iloc[-1])
     is_vol_spike = bool(volume_spike(df, length=20, multiplier=1.5))
 
-    # 1.6) Trend / Sideway mode
     mode = detect_market_mode(df)
     size_mult = 1.0 if mode == "TREND" else 0.5
 
-    # 1.8) MTF summary (1W permit / 4H confirm)
     mtf = get_mtf_summary(symbol) or {}
     weekly_permit_long = bool(mtf.get("weekly_permit_long", True))
     weekly_permit_short = bool(mtf.get("weekly_permit_short", True))
@@ -214,19 +215,15 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         "position_size_mult": size_mult,
     }
 
-    # SIDEWAY -> engine แยก
     if mode == "SIDEWAY":
-        # ✅ FIX: ส่ง MTF permit เข้าไปด้วย
         base["weekly_permit_long"] = weekly_permit_long
         base["weekly_permit_short"] = weekly_permit_short
         return run_sideway_engine(symbol, df, base)
 
-    # 2) Pivot detection (1D)
     pivots = find_fractal_pivots(df)
     pivots = filter_pivots(pivots, min_pct_move=1.5)
     wave_label = label_pivot_chain(pivots)
 
-    # 2.5) Build SR zones from pivots
     zones = build_zones_from_pivots(df)
     sr = nearest_support_resist(zones, price=current_price)
 
@@ -237,64 +234,66 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "message": "โครงสร้างยังไม่ชัด",
             "wave_label": wave_label,
             "sideway": None,
-        "zones": zones if zones else [],
-        "sr": sr if sr else {},
+            "zones": zones if zones else [],
+            "sr": sr if sr else {},
         })
         return out
 
-    # 3) Build scenarios (top 3) (1D)
+    # --- สร้าง scenarios จาก pivots ---
     scenarios = build_scenarios(
         pivots,
         macro_trend=macro_trend,
         rsi14=rsi14,
         volume_spike=is_vol_spike,
-    )
+    ) or []
 
-    # 3.5) Context gate — ✅ FIX: ใช้ compute_macro_bias จริง ไม่ hardcode
+    # --- Context gate ---
     regime = detect_market_regime(df)
     macro_bias = compute_macro_bias(regime, rsi14=rsi14)
 
-    gated_scenarios: List[Dict] = []
-    for sc in (scenarios or []):
+    normalized: List[Dict] = []
+    for sc in scenarios:
         gated = apply_context_gate(
             scenario=sc,
             macro_bias=macro_bias,
             min_confidence=MIN_CONFIDENCE_LIVE,
         )
-        if isinstance(gated, dict) and gated.get("direction"):
-            gated_scenarios.append(gated)
 
-    scenarios = gated_scenarios
+        if isinstance(gated, dict) and gated.get("direction"):
+            sc2 = dict(gated)
+            sc2["context_allowed"] = True
+            sc2["context_reason"] = None
+            normalized.append(sc2)
+        else:
+            sc2 = dict(sc)
+            sc2["context_allowed"] = False
+            sc2["context_reason"] = "blocked_by_context_gate"
+            normalized.append(sc2)
+
+    scenarios = normalized
 
     results: List[Dict] = []
 
-    # 4) Build trade plan per scenario
-    for scenario in (scenarios or []):
+    for scenario in scenarios:
         direction = (scenario.get("direction") or "").upper()
         if not direction:
             continue
 
-        # --- MTF Gate (weekly permit) ---
+        # --- Weekly permit (HARD filter) ---
+        weekly_ok = True
         if direction == "LONG" and not weekly_permit_long:
-            continue
+            weekly_ok = False
         if direction == "SHORT" and not weekly_permit_short:
-            continue
+            weekly_ok = False
 
-        # --- MTF Gate (4H confirm) ---
+        # --- 4H confirm (SOFT flag เท่านั้น) ---
         mtf_ok = True
         if direction == "LONG" and not h4_confirm_long:
             mtf_ok = False
         if direction == "SHORT" and not h4_confirm_short:
             mtf_ok = False
 
-        # ✅ FIX: เช็ค mtf_ok ก่อน build_trade_plan (เดิมเช็คผิดที่)
-        if not mtf_ok:
-            logger.info(
-                f"[{symbol}] MTF block: direction={direction} "
-                f"h4_confirm_long={h4_confirm_long} h4_confirm_short={h4_confirm_short} "
-                f"notes={mtf.get('notes')}"
-            )
-            continue
+        context_allowed = bool(scenario.get("context_allowed", True))
 
         trade_plan = build_trade_plan(
             scenario,
@@ -303,29 +302,59 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             sr=sr,
         )
 
-        # Close-confirm trigger
-        entry = trade_plan.get("entry")
-        if entry is not None:
-            entry = float(entry)
-            stype = (scenario.get("type") or "").upper()
-            if stype == "ABC_UP":
-                trade_plan["triggered"] = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
-            elif stype == "ABC_DOWN":
-                trade_plan["triggered"] = last_close < float(trade_plan["sl"]) * (1 - ABC_CONFIRM_BUFFER)
-            else:
-                if direction == "LONG" and last_close <= entry:
-                    trade_plan["triggered"] = False
-                elif direction == "SHORT" and last_close >= entry:
-                    trade_plan["triggered"] = False
-                else:
-                    trade_plan["triggered"] = True
-        else:
-            trade_plan["triggered"] = False
+        # FIX: ลบ _force_minimal_trade_plan ออกแล้ว
+        # ถ้า build_trade_plan คืน entry=None หรือ valid=False
+        # → trade_plan.valid=False → allowed_to_trade=False → BLOCKED
+        # ให้ RR filter ทำงานตามปกติ
 
+        # LIVE: Hard filter = weekly_ok + trade_plan.valid
+        allowed_to_trade = bool(weekly_ok and trade_plan.get("valid") is True)
+
+        # --- Trigger logic ---
+        if not allowed_to_trade:
+            trade_plan["triggered"] = False
+        else:
+            entry = trade_plan.get("entry")
+            if entry is not None:
+                entry = float(entry)
+                stype = (scenario.get("type") or "").upper()
+                if stype == "ABC_UP":
+                    trade_plan["triggered"] = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
+                elif stype == "ABC_DOWN":
+                    trade_plan["triggered"] = last_close < float(trade_plan["sl"]) * (1 - ABC_CONFIRM_BUFFER)
+                else:
+                    if direction == "LONG" and last_close <= entry:
+                        trade_plan["triggered"] = False
+                    elif direction == "SHORT" and last_close >= entry:
+                        trade_plan["triggered"] = False
+                    else:
+                        trade_plan["triggered"] = True
+            else:
+                trade_plan["triggered"] = False
+
+        trade_plan["allowed_to_trade"] = allowed_to_trade
+        trade_plan["weekly_ok"] = weekly_ok
+        trade_plan["mtf_ok"] = mtf_ok
+        trade_plan["context_allowed"] = context_allowed
+        trade_plan["context_reason"] = scenario.get("context_reason")
         trade_plan["volume_ok"] = is_vol_spike
 
-        _send_log(f"[{symbol}] direction={direction} conf={scenario.get('confidence')} triggered={trade_plan.get('triggered')}")
+        _send_log(
+            f"[{symbol}] dir={direction} conf={scenario.get('confidence')} "
+            f"weekly_ok={weekly_ok} mtf_ok={mtf_ok} context={context_allowed} "
+            f"valid={trade_plan.get('valid')} triggered={trade_plan.get('triggered')}"
+        )
 
+        # === STATUS / BLOCK REASON ===
+        blocked = []
+        if not weekly_ok:
+            blocked.append("weekly_permit_block")
+        if not mtf_ok:
+            blocked.append("h4_confirm_block")
+        if not context_allowed:
+            blocked.append("context_gate_block")
+
+        status = "READY" if (trade_plan.get("valid") and trade_plan.get("allowed_to_trade")) else "BLOCKED"
 
         results.append({
             "type": scenario.get("type"),
@@ -334,25 +363,31 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "probability": scenario.get("probability"),
             "confidence": scenario.get("confidence"),
             "context_score": scenario.get("context_score"),
+            "weekly_ok": weekly_ok,
             "mtf_ok": mtf_ok,
+            "context_allowed": context_allowed,
+            "context_reason": scenario.get("context_reason"),
+            "status": status,
+            "blocked_reasons": blocked,
             "trade_plan": trade_plan,
             "reasons": scenario.get("reasons", []),
         })
 
+        # Execute: เฉพาะ triggered จริงเท่านั้น
         if trade_plan.get("triggered"):
             try:
-                import requests as req
-                vps_url = os.getenv("VPS_URL", "")
-                exec_token = os.getenv("EXEC_TOKEN", "")
+                vps_url = (os.getenv("VPS_URL", "") or "").strip()
+                exec_token = (os.getenv("EXEC_TOKEN", "") or "").strip()
+
+                if not vps_url.startswith("http"):
+                    logger.info(f"[{symbol}] SKIP execute (VPS_URL not set)")
+                    continue
+
                 req.post(
                     f"{vps_url}/execute",
-                    json={
-                        "symbol": symbol,
-                        "direction": direction,
-                        "trade_plan": trade_plan,
-                    },
+                    json={"symbol": symbol, "direction": direction, "trade_plan": trade_plan},
                     headers={"X-EXEC-TOKEN": exec_token},
-                    timeout=10
+                    timeout=10,
                 )
                 logger.info(f"[{symbol}] ส่ง signal ไป VPS สำเร็จ")
             except Exception as e:
@@ -361,10 +396,8 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     msg = None
     if scenarios and not results:
         msg = (
-            f"โดนกรองด้วย MTF/Trend/RSI/SNIPER "
-            f"(1D={macro_trend}, rsi14={rsi14:.1f}, "
-            f"1Wpermit(L/S)={weekly_permit_long}/{weekly_permit_short}, "
-            f"4Hconfirm(L/S)={h4_confirm_long}/{h4_confirm_short})"
+            f"ไม่มี scenario ที่สร้างได้ "
+            f"(1D={macro_trend}, rsi14={rsi14:.1f})"
         )
 
     out = dict(base)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Dict, List, Optional
+from collections import Counter
 
 import pandas as pd
 
@@ -19,7 +20,6 @@ from app.analysis.market_regime import detect_market_regime
 from app.analysis.macro_bias import compute_macro_bias
 from app.config.wave_settings import MIN_CONFIDENCE_BACKTEST, ABC_CONFIRM_BUFFER
 
-
 logger = logging.getLogger(__name__)
 
 # ---- constants ----
@@ -29,6 +29,9 @@ _EMPTY_BUCKETS = {
     "conf>=70": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
     "conf>=80": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
 }
+
+# (optional) เก็บสถิติ invalid reason แบบ global ถ้าต้องการดูรวม
+INVALID_REASONS = Counter()
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +161,8 @@ def backtest_symbol(
     - ทุกแท่งที่ผ่าน filter → เปิด 1 เทรด (ไม่ซ้อน)
     - จบเมื่อ SL หรือ TP3
     """
+    invalid_reasons = Counter()
+
     _empty = {
         "symbol": symbol,
         "trades": 0,
@@ -212,6 +217,7 @@ def backtest_symbol(
 
         trade_plan = build_trade_plan(sc, current_price=last_close, min_rr=min_rr)
         if not trade_plan.get("valid"):
+            invalid_reasons[str(trade_plan.get("reason") or "NO_REASON")] += 1
             continue
 
         entry = float(trade_plan["entry"])
@@ -245,6 +251,7 @@ def backtest_symbol(
         )
 
         trades.append({
+            "trade_plan": trade_plan,
             "symbol": symbol,
             "bar_index": i,
             "direction": direction,
@@ -265,6 +272,9 @@ def backtest_symbol(
             in_position = False
         else:
             skip_until_bar = (i + 1) + int(sim["bars"])
+
+    # (optional) รวม reason ไว้ดู
+    INVALID_REASONS.update(invalid_reasons)
 
     wins = sum(1 for t in trades if t["result"] == "WIN")
     losses = sum(1 for t in trades if t["result"] == "LOSS")
@@ -292,6 +302,7 @@ def backtest_symbol(
             "conf>=70": _bucket_stats(trades, 70),
             "conf>=80": _bucket_stats(trades, 80),
         },
+        "invalid_reasons": invalid_reasons,  # ✅ เพิ่มให้ดูได้
     }
 
 
@@ -401,6 +412,7 @@ def backtest_symbol_trades(
         r = _r_multiple(direction, entry, float(trade_plan["sl"]), float(trade_plan["tp3"]), sim["result"])
 
         trades.append({
+            "trade_plan": trade_plan,
             "symbol": symbol,
             "entry_index": i,
             "entry_time": entry_time,
@@ -422,6 +434,7 @@ def backtest_symbol_trades(
 
     return {"symbol": symbol, "trades": trades, "data": df}
 
+
 # ---------------------------------------------------------------------------
 # portfolio_simulator
 # ---------------------------------------------------------------------------
@@ -433,6 +446,7 @@ def portfolio_simulator(
     min_pct_move: float = 1.5,
     min_rr: float = 2.0,
     min_confidence: float = 60.0,
+    return_trades_detail: bool = False,
 ) -> Dict:
     """
     Portfolio simulator:
@@ -453,7 +467,6 @@ def portfolio_simulator(
         )
         all_trades.extend(res["trades"])
 
-    # ✅ FIX: ใช้ _safe_entry_time กัน NaT/None TypeError ตอน sort
     all_trades.sort(key=_safe_entry_time)
 
     closed = [t for t in all_trades if t["result"] in ("WIN", "LOSS")]
@@ -483,7 +496,9 @@ def portfolio_simulator(
         "winrate": winrate,
         "equity_R": round(equity, 2),
         "max_drawdown_R": round(max_dd, 2),
+        "trades_detail": closed if return_trades_detail else None,
     }
+
 
 # ---------------------------------------------------------------------------
 # __main__

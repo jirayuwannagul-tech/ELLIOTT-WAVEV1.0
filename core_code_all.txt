@@ -189,7 +189,6 @@ def compute_macro_bias(regime: Dict, rsi14: float = 50.0) -> Dict:
             strength -= 5.0
 
     # ---- volatility penalty (กันมั่วใน vol สูง) ----
-    # vol_score: LOW 25 / MID 55 / HIGH 80 (จาก market_regime)
     if vol_score >= 75:
         strength -= 8.0
     elif vol_score <= 30:
@@ -198,13 +197,15 @@ def compute_macro_bias(regime: Dict, rsi14: float = 50.0) -> Dict:
     strength = _clamp(strength)
 
     # ---- allow gates ----
-    # กติกา: ถ้า bias ชัด (>=60) ให้ “ปิดฝั่งสวน” เลย
+    # FIX: ลด threshold จาก 60 → 50
+    # เดิม strength>=60 แทบไม่เคยถึง → allow_long/allow_short เป็น True ตลอด
+    # ใหม่ strength>=50 ทำให้ TREND regime ที่มี bias ชัดบล็อกฝั่งสวนได้จริง
     allow_long = True
     allow_short = True
 
-    if bias == "LONG" and strength >= 60:
+    if bias == "LONG" and strength >= 50:
         allow_short = False
-    if bias == "SHORT" and strength >= 60:
+    if bias == "SHORT" and strength >= 50:
         allow_long = False
 
     mb = MacroBias(
@@ -608,7 +609,7 @@ from app.indicators.ema import add_ema
 from app.indicators.rsi import add_rsi
 from app.indicators.atr import add_atr
 from app.indicators.volume import add_volume_ma, volume_spike
-from app.indicators.trend_filter import trend_filter_ema, allow_direction
+from app.indicators.trend_filter import trend_filter_ema
 
 from app.analysis.wave_labeler import label_pivot_chain
 from app.analysis.context_gate import apply_context_gate
@@ -617,7 +618,14 @@ from app.analysis.macro_bias import compute_macro_bias
 from app.analysis.multi_tf import get_mtf_summary
 from app.analysis.zones import build_zones_from_pivots, nearest_support_resist
 from app.analysis.trend_detector import detect_market_mode
-from app.config.wave_settings import BARS, TIMEFRAME, MIN_RR, MIN_CONFIDENCE_LIVE, ABC_CONFIRM_BUFFER
+from app.config.wave_settings import (
+    BARS,
+    TIMEFRAME,
+    MIN_RR,
+    MIN_CONFIDENCE_LIVE,
+    ABC_CONFIRM_BUFFER,
+)
+
 
 def _send_log(msg: str) -> None:
     try:
@@ -628,7 +636,7 @@ def _send_log(msg: str) -> None:
                 f"{vps_url}/log",
                 json={"msg": msg},
                 headers={"X-EXEC-TOKEN": exec_token},
-                timeout=5
+                timeout=5,
             )
     except Exception:
         pass
@@ -638,6 +646,18 @@ def _safe_float(x, default: float = 0.0) -> float:
         return float(x)
     except Exception:
         return default
+
+# ── ลบ _fallback_entry_from_pivots ──────────────────────────────────────────
+# เหตุผล: ใช้คู่กับ _force_minimal_trade_plan เท่านั้น ซึ่งถูกลบออกแล้ว
+# ถ้า build_trade_plan คืน entry=None → valid=False → BLOCKED ตามปกติ
+
+# ── ลบ _force_minimal_trade_plan ────────────────────────────────────────────
+# เหตุผล: bypass valid=True โดยไม่ผ่านการคำนวณ RR จริง
+#         ทำให้ F_RR_VALID ไม่มีผลเลยใน Live
+#         ลบออกเพื่อให้ RR filter ทำงานได้ตามปกติ
+
+# ── ลบ _ensure_basic_risk_levels ────────────────────────────────────────────
+# เหตุผล: ไม่ถูกเรียกใช้ที่ไหนใน codebase (dead code)
 
 def _range_levels(df: pd.DataFrame, lookback: int = 60) -> Dict:
     """คำนวณกรอบ sideway แบบง่ายจาก lookback ล่าสุด"""
@@ -662,10 +682,6 @@ def _range_levels(df: pd.DataFrame, lookback: int = 60) -> Dict:
 def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
     """
     SIDEWAY ENGINE (v0): mean-reversion ในกรอบ
-
-    เงื่อนไขเข้าแบบง่าย:
-    - LONG: ราคาใกล้ range_low + buffer และ RSI ต่ำ
-    - SHORT: ราคาใกล้ range_high - buffer และ RSI สูง
     """
     base = dict(base or {})
 
@@ -686,13 +702,11 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
         "lookback": 60,
     }
 
-    # ถ้าข้อมูลไม่พอ -> คืนแบบไม่ยิงสัญญาณ
     if not range_low or not range_high or range_high <= range_low:
         base["scenarios"] = []
         base["message"] = "SIDEWAY: ข้อมูลยังไม่พอคำนวณกรอบ"
         return base
 
-    # buffer กันหลอก: ใช้ ATR ถ้ามี ไม่งั้นใช้ 0.5% ของราคา
     buffer = float(atr) * 0.5 if atr and atr > 0 else float(price) * 0.005
 
     near_support = price <= (range_low + buffer)
@@ -700,7 +714,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
 
     scenarios: List[Dict] = []
 
-    # LONG near support + RSI low
     if near_support and rsi14 <= 45 and weekly_permit_long:
         sc = {
             "type": "SIDEWAY_RANGE",
@@ -708,7 +721,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
             "direction": "LONG",
             "probability": 0.0,
             "confidence": 65.0,
-            # ✅ ADD
             "range_low": range_low,
             "range_high": range_high,
             "atr": atr,
@@ -722,7 +734,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
         sc["trade_plan"] = plan
         scenarios.append(sc)
 
-    # SHORT near resist + RSI high
     if near_resist and rsi14 >= 55 and weekly_permit_short:
         sc = {
             "type": "SIDEWAY_RANGE",
@@ -730,7 +741,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
             "direction": "SHORT",
             "probability": 0.0,
             "confidence": 65.0,
-            # ✅ ADD
             "range_low": range_low,
             "range_high": range_high,
             "atr": atr,
@@ -747,26 +757,20 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
     base["scenarios"] = scenarios
 
     if scenarios:
-        base["message"] = (
-            f"SIDEWAY: พบ setup ในกรอบ ({range_low:,.2f} - {range_high:,.2f})"
-        )
+        base["message"] = f"SIDEWAY: พบ setup ในกรอบ ({range_low:,.2f} - {range_high:,.2f})"
     else:
-        base["message"] = (
-            f"SIDEWAY: ยังไม่เข้าเงื่อนไข (กรอบ {range_low:,.2f} - {range_high:,.2f})"
-        )
+        base["message"] = f"SIDEWAY: ยังไม่เข้าเงื่อนไข (กรอบ {range_low:,.2f} - {range_high:,.2f})"
 
     return base
 
 
 def analyze_symbol(symbol: str) -> Optional[Dict]:
-    # 1) Fetch data (1D)
     df = fetch_ohlcv(symbol, interval=TIMEFRAME, limit=BARS)
     df = drop_unclosed_candle(df)
 
-    if df is None or len(df) < 250:  # ต้องพอสำหรับ EMA200
+    if df is None or len(df) < 250:
         return None
 
-    # 1.5) Add indicators (1D)
     df = add_ema(df, lengths=(50, 200))
     df = add_rsi(df, length=14)
     df = add_atr(df, length=14)
@@ -777,15 +781,13 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     close_today = last_close
     close_yesterday = float(df["close"].iloc[-2]) if len(df) >= 2 else None
 
-    macro_trend = trend_filter_ema(df)  # BULL/BEAR/NEUTRAL (1D)
+    macro_trend = trend_filter_ema(df)
     rsi14 = float(df["rsi14"].iloc[-1])
     is_vol_spike = bool(volume_spike(df, length=20, multiplier=1.5))
 
-    # 1.6) Trend / Sideway mode
     mode = detect_market_mode(df)
     size_mult = 1.0 if mode == "TREND" else 0.5
 
-    # 1.8) MTF summary (1W permit / 4H confirm)
     mtf = get_mtf_summary(symbol) or {}
     weekly_permit_long = bool(mtf.get("weekly_permit_long", True))
     weekly_permit_short = bool(mtf.get("weekly_permit_short", True))
@@ -805,19 +807,15 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         "position_size_mult": size_mult,
     }
 
-    # SIDEWAY -> engine แยก
     if mode == "SIDEWAY":
-        # ✅ FIX: ส่ง MTF permit เข้าไปด้วย
         base["weekly_permit_long"] = weekly_permit_long
         base["weekly_permit_short"] = weekly_permit_short
         return run_sideway_engine(symbol, df, base)
 
-    # 2) Pivot detection (1D)
     pivots = find_fractal_pivots(df)
     pivots = filter_pivots(pivots, min_pct_move=1.5)
     wave_label = label_pivot_chain(pivots)
 
-    # 2.5) Build SR zones from pivots
     zones = build_zones_from_pivots(df)
     sr = nearest_support_resist(zones, price=current_price)
 
@@ -828,64 +826,66 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "message": "โครงสร้างยังไม่ชัด",
             "wave_label": wave_label,
             "sideway": None,
-        "zones": zones if zones else [],
-        "sr": sr if sr else {},
+            "zones": zones if zones else [],
+            "sr": sr if sr else {},
         })
         return out
 
-    # 3) Build scenarios (top 3) (1D)
+    # --- สร้าง scenarios จาก pivots ---
     scenarios = build_scenarios(
         pivots,
         macro_trend=macro_trend,
         rsi14=rsi14,
         volume_spike=is_vol_spike,
-    )
+    ) or []
 
-    # 3.5) Context gate — ✅ FIX: ใช้ compute_macro_bias จริง ไม่ hardcode
+    # --- Context gate ---
     regime = detect_market_regime(df)
     macro_bias = compute_macro_bias(regime, rsi14=rsi14)
 
-    gated_scenarios: List[Dict] = []
-    for sc in (scenarios or []):
+    normalized: List[Dict] = []
+    for sc in scenarios:
         gated = apply_context_gate(
             scenario=sc,
             macro_bias=macro_bias,
             min_confidence=MIN_CONFIDENCE_LIVE,
         )
-        if isinstance(gated, dict) and gated.get("direction"):
-            gated_scenarios.append(gated)
 
-    scenarios = gated_scenarios
+        if isinstance(gated, dict) and gated.get("direction"):
+            sc2 = dict(gated)
+            sc2["context_allowed"] = True
+            sc2["context_reason"] = None
+            normalized.append(sc2)
+        else:
+            sc2 = dict(sc)
+            sc2["context_allowed"] = False
+            sc2["context_reason"] = "blocked_by_context_gate"
+            normalized.append(sc2)
+
+    scenarios = normalized
 
     results: List[Dict] = []
 
-    # 4) Build trade plan per scenario
-    for scenario in (scenarios or []):
+    for scenario in scenarios:
         direction = (scenario.get("direction") or "").upper()
         if not direction:
             continue
 
-        # --- MTF Gate (weekly permit) ---
+        # --- Weekly permit (HARD filter) ---
+        weekly_ok = True
         if direction == "LONG" and not weekly_permit_long:
-            continue
+            weekly_ok = False
         if direction == "SHORT" and not weekly_permit_short:
-            continue
+            weekly_ok = False
 
-        # --- MTF Gate (4H confirm) ---
+        # --- 4H confirm (SOFT flag เท่านั้น) ---
         mtf_ok = True
         if direction == "LONG" and not h4_confirm_long:
             mtf_ok = False
         if direction == "SHORT" and not h4_confirm_short:
             mtf_ok = False
 
-        # ✅ FIX: เช็ค mtf_ok ก่อน build_trade_plan (เดิมเช็คผิดที่)
-        if not mtf_ok:
-            logger.info(
-                f"[{symbol}] MTF block: direction={direction} "
-                f"h4_confirm_long={h4_confirm_long} h4_confirm_short={h4_confirm_short} "
-                f"notes={mtf.get('notes')}"
-            )
-            continue
+        context_allowed = bool(scenario.get("context_allowed", True))
 
         trade_plan = build_trade_plan(
             scenario,
@@ -894,29 +894,59 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             sr=sr,
         )
 
-        # Close-confirm trigger
-        entry = trade_plan.get("entry")
-        if entry is not None:
-            entry = float(entry)
-            stype = (scenario.get("type") or "").upper()
-            if stype == "ABC_UP":
-                trade_plan["triggered"] = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
-            elif stype == "ABC_DOWN":
-                trade_plan["triggered"] = last_close < float(trade_plan["sl"]) * (1 - ABC_CONFIRM_BUFFER)
-            else:
-                if direction == "LONG" and last_close <= entry:
-                    trade_plan["triggered"] = False
-                elif direction == "SHORT" and last_close >= entry:
-                    trade_plan["triggered"] = False
-                else:
-                    trade_plan["triggered"] = True
-        else:
-            trade_plan["triggered"] = False
+        # FIX: ลบ _force_minimal_trade_plan ออกแล้ว
+        # ถ้า build_trade_plan คืน entry=None หรือ valid=False
+        # → trade_plan.valid=False → allowed_to_trade=False → BLOCKED
+        # ให้ RR filter ทำงานตามปกติ
 
+        # LIVE: Hard filter = weekly_ok + trade_plan.valid
+        allowed_to_trade = bool(weekly_ok and trade_plan.get("valid") is True)
+
+        # --- Trigger logic ---
+        if not allowed_to_trade:
+            trade_plan["triggered"] = False
+        else:
+            entry = trade_plan.get("entry")
+            if entry is not None:
+                entry = float(entry)
+                stype = (scenario.get("type") or "").upper()
+                if stype == "ABC_UP":
+                    trade_plan["triggered"] = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
+                elif stype == "ABC_DOWN":
+                    trade_plan["triggered"] = last_close < float(trade_plan["sl"]) * (1 - ABC_CONFIRM_BUFFER)
+                else:
+                    if direction == "LONG" and last_close <= entry:
+                        trade_plan["triggered"] = False
+                    elif direction == "SHORT" and last_close >= entry:
+                        trade_plan["triggered"] = False
+                    else:
+                        trade_plan["triggered"] = True
+            else:
+                trade_plan["triggered"] = False
+
+        trade_plan["allowed_to_trade"] = allowed_to_trade
+        trade_plan["weekly_ok"] = weekly_ok
+        trade_plan["mtf_ok"] = mtf_ok
+        trade_plan["context_allowed"] = context_allowed
+        trade_plan["context_reason"] = scenario.get("context_reason")
         trade_plan["volume_ok"] = is_vol_spike
 
-        _send_log(f"[{symbol}] direction={direction} conf={scenario.get('confidence')} triggered={trade_plan.get('triggered')}")
+        _send_log(
+            f"[{symbol}] dir={direction} conf={scenario.get('confidence')} "
+            f"weekly_ok={weekly_ok} mtf_ok={mtf_ok} context={context_allowed} "
+            f"valid={trade_plan.get('valid')} triggered={trade_plan.get('triggered')}"
+        )
 
+        # === STATUS / BLOCK REASON ===
+        blocked = []
+        if not weekly_ok:
+            blocked.append("weekly_permit_block")
+        if not mtf_ok:
+            blocked.append("h4_confirm_block")
+        if not context_allowed:
+            blocked.append("context_gate_block")
+
+        status = "READY" if (trade_plan.get("valid") and trade_plan.get("allowed_to_trade")) else "BLOCKED"
 
         results.append({
             "type": scenario.get("type"),
@@ -925,25 +955,31 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "probability": scenario.get("probability"),
             "confidence": scenario.get("confidence"),
             "context_score": scenario.get("context_score"),
+            "weekly_ok": weekly_ok,
             "mtf_ok": mtf_ok,
+            "context_allowed": context_allowed,
+            "context_reason": scenario.get("context_reason"),
+            "status": status,
+            "blocked_reasons": blocked,
             "trade_plan": trade_plan,
             "reasons": scenario.get("reasons", []),
         })
 
+        # Execute: เฉพาะ triggered จริงเท่านั้น
         if trade_plan.get("triggered"):
             try:
-                import requests as req
-                vps_url = os.getenv("VPS_URL", "")
-                exec_token = os.getenv("EXEC_TOKEN", "")
+                vps_url = (os.getenv("VPS_URL", "") or "").strip()
+                exec_token = (os.getenv("EXEC_TOKEN", "") or "").strip()
+
+                if not vps_url.startswith("http"):
+                    logger.info(f"[{symbol}] SKIP execute (VPS_URL not set)")
+                    continue
+
                 req.post(
                     f"{vps_url}/execute",
-                    json={
-                        "symbol": symbol,
-                        "direction": direction,
-                        "trade_plan": trade_plan,
-                    },
+                    json={"symbol": symbol, "direction": direction, "trade_plan": trade_plan},
                     headers={"X-EXEC-TOKEN": exec_token},
-                    timeout=10
+                    timeout=10,
                 )
                 logger.info(f"[{symbol}] ส่ง signal ไป VPS สำเร็จ")
             except Exception as e:
@@ -952,10 +988,8 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     msg = None
     if scenarios and not results:
         msg = (
-            f"โดนกรองด้วย MTF/Trend/RSI/SNIPER "
-            f"(1D={macro_trend}, rsi14={rsi14:.1f}, "
-            f"1Wpermit(L/S)={weekly_permit_long}/{weekly_permit_short}, "
-            f"4Hconfirm(L/S)={h4_confirm_long}/{h4_confirm_short})"
+            f"ไม่มี scenario ที่สร้างได้ "
+            f"(1D={macro_trend}, rsi14={rsi14:.1f})"
         )
 
     out = dict(base)
@@ -1291,12 +1325,6 @@ from app.analysis.wave_rules import validate_impulse, validate_abc
 
 
 def score_scenario(base_score, warnings, macro_trend, rsi14, volume_spike, direction):
-    """
-    Scoring model (0-100)
-    - base_score: strength from structure type
-    - warnings: ลดคะแนนจาก rule/fib warnings
-    - macro_trend/rsi/volume: เพิ่ม-ลดความมั่นใจ
-    """
     score = float(base_score)
 
     # warning penalty
@@ -1309,7 +1337,7 @@ def score_scenario(base_score, warnings, macro_trend, rsi14, volume_spike, direc
     if mt in ("BULL", "BEAR"):
         score += 4
 
-    # RSI bonus (only strong momentum)
+    # RSI bonus
     direction = (direction or "").upper()
     if direction == "LONG":
         if rsi14 >= 60:
@@ -1332,10 +1360,8 @@ def score_scenario(base_score, warnings, macro_trend, rsi14, volume_spike, direc
 def normalize_scores(scenarios: List[Dict]) -> List[Dict]:
     total = sum(s["score"] for s in scenarios) or 1.0
     for s in scenarios:
-        # ✅ FIX: เปลี่ยนชื่อเป็น relative_score แทน probability
-        # เพราะนี่คือสัดส่วนคะแนนเทียบกัน ไม่ใช่ probability จริง
         s["relative_score"] = round((s["score"] / total) * 100, 1)
-        s["probability"] = s["relative_score"]  # เก็บไว้กัน backward compat
+        s["probability"] = s["relative_score"]  # backward compat
         s["confidence"] = round(float(s["score"]), 1)
     return scenarios
 
@@ -1346,16 +1372,13 @@ def build_scenarios(
     rsi14: float = 50.0,
     volume_spike: bool = False
 ) -> List[Dict]:
-    scenarios = []
+    scenarios: List[Dict] = []
 
-    # -------------------------
     # Scenario 1: Impulse LONG
-    # -------------------------
     if len(pivots) >= 6:
         last6 = pivots[-6:]
         ok, warnings = validate_impulse(last6, "LONG")
-        if ok and len(warnings) <= 1:
-
+        if ok:
             scenarios.append({
                 "type": "IMPULSE_LONG",
                 "phase": "Wave 5 or continuation",
@@ -1365,14 +1388,11 @@ def build_scenarios(
                 "pivots": last6,
             })
 
-    # -------------------------
     # Scenario 2: Impulse SHORT
-    # -------------------------
     if len(pivots) >= 6:
         last6 = pivots[-6:]
         ok, warnings = validate_impulse(last6, "SHORT")
-        if ok and len(warnings) <= 1:
-
+        if ok:
             scenarios.append({
                 "type": "IMPULSE_SHORT",
                 "phase": "Wave 5 or continuation",
@@ -1382,14 +1402,12 @@ def build_scenarios(
                 "pivots": last6,
             })
 
-    # -------------------------
     # Scenario 3: ABC Correction
-    # -------------------------
     if len(pivots) >= 4:
         last4 = pivots[-4:]
 
         ok_down, warnings_down = validate_abc(last4, "DOWN")
-        if ok_down and len(warnings_down) <= 1:
+        if ok_down:
             scenarios.append({
                 "type": "ABC_DOWN",
                 "phase": "Wave C ลง",
@@ -1400,7 +1418,7 @@ def build_scenarios(
             })
 
         ok_up, warnings_up = validate_abc(last4, "UP")
-        if ok_up and len(warnings_up) <= 1:
+        if ok_up:
             scenarios.append({
                 "type": "ABC_UP",
                 "phase": "Wave C ขึ้น",
@@ -1410,13 +1428,35 @@ def build_scenarios(
                 "pivots": last4,
             })
 
+    # ✅ FIX: ถ้าไม่มี scenario แต่มี pivots พอแล้ว -> สร้าง fallback ขั้นต่ำ
+    # เพื่อไม่ให้ scenarios=0 (ให้ระบบไปตัด READY/BLOCKED ใน wave_engine แทน)
+    if not scenarios and len(pivots) >= 4:
+        last4 = pivots[-4:]
+        fb_reasons = ["fallback: rules not satisfied yet (keep watching)"]
+
+        scenarios.append({
+            "type": "ABC_UP",
+            "phase": "Fallback (watchlist)",
+            "direction": "LONG",
+            "score": score_scenario(50, fb_reasons, macro_trend, rsi14, volume_spike, direction="LONG"),
+            "reasons": fb_reasons,
+            "pivots": last4,
+        })
+        scenarios.append({
+            "type": "ABC_DOWN",
+            "phase": "Fallback (watchlist)",
+            "direction": "SHORT",
+            "score": score_scenario(50, fb_reasons, macro_trend, rsi14, volume_spike, direction="SHORT"),
+            "reasons": fb_reasons,
+            "pivots": last4,
+        })
+
     if not scenarios:
         return []
 
     scenarios.sort(key=lambda x: x["score"], reverse=True)
     scenarios = scenarios[:3]
-    scenarios = normalize_scores(scenarios)
-    return scenarios
+    return normalize_scores(scenarios)
 ===== app/analysis/zones.py =====
 from __future__ import annotations
 
@@ -1583,6 +1623,7 @@ from __future__ import annotations
 
 import logging
 from typing import Dict, List, Optional
+from collections import Counter
 
 import pandas as pd
 
@@ -1600,7 +1641,6 @@ from app.analysis.market_regime import detect_market_regime
 from app.analysis.macro_bias import compute_macro_bias
 from app.config.wave_settings import MIN_CONFIDENCE_BACKTEST, ABC_CONFIRM_BUFFER
 
-
 logger = logging.getLogger(__name__)
 
 # ---- constants ----
@@ -1610,6 +1650,9 @@ _EMPTY_BUCKETS = {
     "conf>=70": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
     "conf>=80": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
 }
+
+# (optional) เก็บสถิติ invalid reason แบบ global ถ้าต้องการดูรวม
+INVALID_REASONS = Counter()
 
 
 # ---------------------------------------------------------------------------
@@ -1739,6 +1782,8 @@ def backtest_symbol(
     - ทุกแท่งที่ผ่าน filter → เปิด 1 เทรด (ไม่ซ้อน)
     - จบเมื่อ SL หรือ TP3
     """
+    invalid_reasons = Counter()
+
     _empty = {
         "symbol": symbol,
         "trades": 0,
@@ -1770,6 +1815,12 @@ def backtest_symbol(
         is_vol_spike = bool(volume_spike(sub, length=20, multiplier=1.5))
         last_close = float(sub["close"].iloc[-1])
 
+        # --- HARD Compression Gate (ATR14 < ATR14_MA50) ---
+        atr = float(sub["atr14"].iloc[-1])
+        atr_ma50 = float(sub["atr14"].rolling(50).mean().iloc[-1]) if len(sub) >= 50 else 0.0
+        if atr_ma50 > 0 and atr >= atr_ma50:
+            continue
+
         scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
         if not scenarios:
             continue
@@ -1787,6 +1838,7 @@ def backtest_symbol(
 
         trade_plan = build_trade_plan(sc, current_price=last_close, min_rr=min_rr)
         if not trade_plan.get("valid"):
+            invalid_reasons[str(trade_plan.get("reason") or "NO_REASON")] += 1
             continue
 
         entry = float(trade_plan["entry"])
@@ -1820,6 +1872,7 @@ def backtest_symbol(
         )
 
         trades.append({
+            "trade_plan": trade_plan,
             "symbol": symbol,
             "bar_index": i,
             "direction": direction,
@@ -1840,6 +1893,9 @@ def backtest_symbol(
             in_position = False
         else:
             skip_until_bar = (i + 1) + int(sim["bars"])
+
+    # (optional) รวม reason ไว้ดู
+    INVALID_REASONS.update(invalid_reasons)
 
     wins = sum(1 for t in trades if t["result"] == "WIN")
     losses = sum(1 for t in trades if t["result"] == "LOSS")
@@ -1867,6 +1923,7 @@ def backtest_symbol(
             "conf>=70": _bucket_stats(trades, 70),
             "conf>=80": _bucket_stats(trades, 80),
         },
+        "invalid_reasons": invalid_reasons,  # ✅ เพิ่มให้ดูได้
     }
 
 
@@ -1903,6 +1960,12 @@ def backtest_symbol_trades(
         rsi14 = float(sub["rsi14"].iloc[-1])
         is_vol_spike = bool(volume_spike(sub, length=20, multiplier=1.5))
         last_close = float(sub["close"].iloc[-1])
+
+        # --- HARD Compression Gate (ATR14 < ATR14_MA50) ---
+        atr = float(sub["atr14"].iloc[-1])
+        atr_ma50 = float(sub["atr14"].rolling(50).mean().iloc[-1]) if len(sub) >= 50 else 0.0
+        if atr_ma50 > 0 and atr >= atr_ma50:
+            continue
 
         scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
         if not scenarios:
@@ -1970,6 +2033,7 @@ def backtest_symbol_trades(
         r = _r_multiple(direction, entry, float(trade_plan["sl"]), float(trade_plan["tp3"]), sim["result"])
 
         trades.append({
+            "trade_plan": trade_plan,
             "symbol": symbol,
             "entry_index": i,
             "entry_time": entry_time,
@@ -1989,7 +2053,7 @@ def backtest_symbol_trades(
         else:
             skip_until_bar = (i + 1) + int(sim["bars"])
 
-    return {"symbol": symbol, "trades": trades}
+    return {"symbol": symbol, "trades": trades, "data": df}
 
 
 # ---------------------------------------------------------------------------
@@ -2003,6 +2067,7 @@ def portfolio_simulator(
     min_pct_move: float = 1.5,
     min_rr: float = 2.0,
     min_confidence: float = 60.0,
+    return_trades_detail: bool = False,
 ) -> Dict:
     """
     Portfolio simulator:
@@ -2023,7 +2088,6 @@ def portfolio_simulator(
         )
         all_trades.extend(res["trades"])
 
-    # ✅ FIX: ใช้ _safe_entry_time กัน NaT/None TypeError ตอน sort
     all_trades.sort(key=_safe_entry_time)
 
     closed = [t for t in all_trades if t["result"] in ("WIN", "LOSS")]
@@ -2053,6 +2117,7 @@ def portfolio_simulator(
         "winrate": winrate,
         "equity_R": round(equity, 2),
         "max_drawdown_R": round(max_dd, 2),
+        "trades_detail": closed if return_trades_detail else None,
     }
 
 
@@ -2092,10 +2157,11 @@ FRACTAL_RIGHT = 2
 MAX_SCENARIOS = 3
 MIN_RR = 1.6
 MIN_CONFIDENCE_LIVE = 65.0
-MIN_CONFIDENCE_BACKTEST = 65
+MIN_CONFIDENCE_BACKTEST = 55
 ABC_CONFIRM_BUFFER = 0.01
 
 MAX_RETRY = 3
+
 ===== app/data/__init__.py =====
 
 ===== app/data/binance_fetcher.py =====
@@ -2354,6 +2420,18 @@ load_dotenv()
 os.environ["TZ"] = "Asia/Bangkok"
 
 import time
+
+# -------- BALANCE CACHE --------
+_balance_cache = {
+    "value": None,
+    "timestamp": 0
+}
+BALANCE_CACHE_SECONDS = 60
+
+# -------- SIMPLE RATE LIMIT --------
+_rate_limit = {}
+RATE_LIMIT_SECONDS = 3
+
 time.tzset()
 
 from flask import Flask, request
@@ -2366,7 +2444,6 @@ from app.trading.trade_executor import execute_signal
 # from app.state.position_manager import get_active, _load_position, _key
 
 app = Flask(__name__)
-_balance_cache = {"value": None, "ts": 0}
 
 from app.performance.dashboard import perf_bp
 app.register_blueprint(perf_bp)
@@ -2495,8 +2572,25 @@ def dashboard():
     if token != expected:
         return "FORBIDDEN - ใส่ ?token=YOUR_TOKEN", 403
 
+    # -------- RATE LIMIT --------
+    ip = request.remote_addr
+    now = time.time()
+
+    last = _rate_limit.get(ip, 0)
+    if now - last < RATE_LIMIT_SECONDS:
+        return "Too Many Requests", 429
+    _rate_limit[ip] = now
+
+    # -------- BALANCE CACHE --------
     try:
-        balance = f"{get_balance():.2f}"
+        if (
+            _balance_cache["value"] is None or
+            now - _balance_cache["timestamp"] > BALANCE_CACHE_SECONDS
+        ):
+            _balance_cache["value"] = get_balance()
+            _balance_cache["timestamp"] = now
+
+        balance = f"{_balance_cache['value']:.2f}"
     except Exception as e:
         balance = f"ERROR: {e}"
 
@@ -3184,8 +3278,6 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
-from app.analysis.fib import fib_extension
-
 logger = logging.getLogger(__name__)
 
 
@@ -3197,41 +3289,60 @@ def calculate_rr(entry: float, sl: float, tp: float) -> float:
     return reward / risk
 
 
-def _safe_fib_extension(p0: float, p1: float, anchor: float, direction: str, base_len: float) -> Dict:
+def _safe_fib_extension(
+    p0: float,
+    p1: float,
+    anchor: float,
+    direction: str,
+    base_len: float,
+) -> Dict:
     """
-    คำนวณ fib_extension แบบปลอดภัย
-    ถ้า p0 == p1 หรือผลออกมาผิดทิศ → fallback คำนวณจาก base_len แทน
+    คำนวณ fib extension ในทิศทางที่ถูกต้องเสมอ
+
+    FIX: เปลี่ยนจากการพึ่ง signed math ของ fib_extension(p0, p1, anchor)
+    มาใช้ direction + base_len โดยตรง
+
+    สาเหตุ bug เดิม:
+    - fib_extension คำนวณ length = b - a (signed)
+    - fallback scenario สร้าง ABC_UP + ABC_DOWN ด้วย pivots ชุดเดียวกัน
+    - pivot type ผิด → length มีเครื่องหมายผิด → targets ผิดทิศ
+    - fallback path คำนวณราคาติดลบ (nonsensical)
+
+    FIX: ใช้ base_len (always positive) + direction เท่านั้น
+    ไม่ขึ้นกับ p0/p1 เลย (เก็บ signature เดิมเพื่อไม่ต้องแก้ call sites)
     """
-    try:
-        if abs(p1 - p0) > 0:
-            targets = fib_extension(p0, p1, anchor)
-            t1 = float(targets["1.0"])
-            t2 = float(targets["1.618"])
-            t3 = float(targets["2.0"])
+    direction = (direction or "").upper()
 
-            # ตรวจสอบว่า TP ถูกทิศไหม
-            if direction == "LONG" and t1 > anchor and t2 > t1 and t3 > t2:
-                return {"1.0": t1, "1.618": t2, "2.0": t3}
-            if direction == "SHORT" and t1 < anchor and t2 < t1 and t3 < t2:
-                return {"1.0": t1, "1.618": t2, "2.0": t3}
+    # คำนวณ base_len จาก p0/p1 ถ้าไม่มี หรือ = 0
+    if base_len <= 0:
+        base_len = abs(p1 - p0)
 
-            logger.warning(f"fib_extension ผิดทิศ direction={direction} t1={t1} anchor={anchor} → fallback")
+    # ถ้ายังเป็น 0 = ข้อมูลเสีย → fallback เป็น 3% ของ anchor
+    if base_len <= 0:
+        logger.warning(f"fib_extension: base_len=0 (p0={p0}, p1={p1}) → ใช้ 3% of anchor")
+        base_len = abs(anchor) * 0.03 if anchor > 0 else 1.0
 
-    except Exception as e:
-        logger.warning(f"fib_extension error: {e} → fallback")
-
-    # fallback: คำนวณจาก base_len
     if direction == "LONG":
-        return {
-            "1.0": anchor + base_len * 1.0,
-            "1.618": anchor + base_len * 1.618,
-            "2.0": anchor + base_len * 2.0,
-        }
-    return {
-        "1.0": anchor - base_len * 1.0,
-        "1.618": anchor - base_len * 1.618,
-        "2.0": anchor - base_len * 2.0,
-    }
+        t1 = anchor + base_len * 1.0
+        t2 = anchor + base_len * 1.618
+        t3 = anchor + base_len * 2.0
+    else:  # SHORT
+        t1 = anchor - base_len * 1.0
+        t2 = anchor - base_len * 1.618
+        t3 = anchor - base_len * 2.0
+
+    # Guard: ราคาต้องไม่ติดลบ (เกิดได้เฉพาะ SHORT ที่ anchor น้อยมาก)
+    if t3 <= 0:
+        logger.warning(
+            f"fib_extension: t3={t3:.4f} <= 0 (anchor={anchor}, base_len={base_len}) "
+            f"→ cap ที่ 1% ของ anchor"
+        )
+        min_price = abs(anchor) * 0.01
+        t3 = max(t3, min_price)
+        t2 = max(t2, min_price)
+        t1 = max(t1, min_price)
+
+    return {"1.0": t1, "1.618": t2, "2.0": t3}
 
 
 def build_trade_plan(
@@ -3310,6 +3421,7 @@ def build_trade_plan(
             l1 = float(pivots[1]["price"])
             h2 = float(pivots[2]["price"])
             a_len = abs(h0 - l1)
+
             if current_price >= h2:
                 trade["reason"] = "ABC_DOWN: ราคาเหนือ SL แล้ว (invalid)"
                 return trade
@@ -3317,6 +3429,8 @@ def build_trade_plan(
             entry = float(current_price)
             sl = h2
 
+            # FIX: ส่ง direction="SHORT" + a_len โดยตรง
+            # ไม่พึ่ง signed math (h0, l1 อาจผิด type ในกรณี fallback)
             fib = _safe_fib_extension(h0, l1, entry, "SHORT", a_len)
             tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
@@ -3330,6 +3444,7 @@ def build_trade_plan(
             h1 = float(pivots[1]["price"])
             l2 = float(pivots[2]["price"])
             a_len = abs(h1 - l0)
+
             if current_price <= l2:
                 trade["reason"] = "ABC_UP: ราคาต่ำกว่า SL แล้ว (invalid)"
                 return trade
@@ -3337,6 +3452,7 @@ def build_trade_plan(
             entry = float(current_price)
             sl = l2
 
+            # FIX: ส่ง direction="LONG" + a_len โดยตรง
             fib = _safe_fib_extension(l0, h1, entry, "LONG", a_len)
             tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
@@ -3372,6 +3488,7 @@ def build_trade_plan(
     p1 = float(pivots[1]["price"])
     base_len = abs(p1 - p0)
 
+    # FIX: ส่ง direction + base_len โดยตรง (ไม่พึ่ง signed math)
     fib = _safe_fib_extension(p0, p1, entry, direction, base_len)
     tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
@@ -3402,11 +3519,12 @@ def build_trade_plan(
 
     return trade
 
+
 def recalculate_from_fill(
     direction: str,
     actual_entry: float,
     original_sl: float,
-    original_tp_rr: float,   # RR ที่ตั้งใจไว้ เช่น 1.618 หรือ 2.0
+    original_tp_rr: float,
     min_rr: float = 1.6,
 ) -> Dict:
     """
@@ -3421,7 +3539,6 @@ def recalculate_from_fill(
     if risk <= 0:
         return {"valid": False, "reason": "risk=0 (entry==sl)"}
 
-    # คำนวณ TP ใหม่จาก actual_entry ด้วย ratio เดิม
     if direction == "LONG":
         tp1 = actual_entry + risk * 1.0
         tp2 = actual_entry + risk * original_tp_rr
@@ -3466,17 +3583,20 @@ from app.config.wave_settings import (
     RUN_MINUTE,
     TIMEZONE,
     MAX_RETRY,
+    TIMEFRAME,
 )
 from app.analysis.wave_engine import analyze_symbol
-from app.config.wave_settings import TIMEFRAME
 from app.services.telegram_reporter import format_symbol_report, send_message
-#from app.trading.binance_trader import get_balance
+
 
 def _check_position_from_vps(symbol: str) -> bool:
     """ถาม VPS ว่ามี position เปิดอยู่ไหม"""
     try:
-        vps_url = os.getenv("VPS_URL", "")
-        exec_token = os.getenv("EXEC_TOKEN", "")
+        vps_url = (os.getenv("VPS_URL", "") or "").rstrip("/")
+        exec_token = os.getenv("EXEC_TOKEN", "") or ""
+        if not vps_url or not exec_token:
+            return False
+
         r = req.get(
             f"{vps_url}/position/status",
             params={"symbol": symbol},
@@ -3484,23 +3604,95 @@ def _check_position_from_vps(symbol: str) -> bool:
             timeout=5,
         )
         if r.status_code == 200:
-            return bool(r.json().get("active", False))
+            return bool((r.json() or {}).get("active", False))
         return False
     except Exception:
         return False
-    
+
+
 def _fmt_price(x: float) -> str:
     x = float(x)
     return f"{x:,.5f}" if x < 1 else f"{x:,.2f}"
 
+
+def _pct_near(a: float, b: float) -> float:
+    """abs(a-b)/b *100"""
+    if not b:
+        return 999.0
+    return abs((a - b) / b) * 100.0
+
+
+def _fallback_scenarios(analysis: dict) -> list:
+    """
+    fallback เมื่อ wave_engine ไม่คืน scenarios
+    - valid: บังคับ True (เพื่อให้มีโอกาสส่งเมื่อ triggered)
+    - triggered: ราคาใกล้ entry ภายใน ENTRY_TRIGGER_PCT (%)
+    """
+    wl = ((analysis.get("wave_label") or {}).get("label") or {}) if analysis else {}
+    direction = (wl.get("direction") or "").upper()
+    conf = float(wl.get("confidence") or 0)
+    price = float(analysis.get("price") or 0)
+
+    pivots = wl.get("pivots") or []
+    last_L = None
+    last_H = None
+    for p in pivots:
+        t = (p.get("type") or "").upper()
+        if t == "L":
+            last_L = p
+        elif t == "H":
+            last_H = p
+
+    entry = None
+    if direction == "LONG" and last_L:
+        entry = float(last_L.get("price") or 0)
+    elif direction == "SHORT" and last_H:
+        entry = float(last_H.get("price") or 0)
+
+    if not entry:
+        entry = price
+
+    trigger_pct = float(os.getenv("ENTRY_TRIGGER_PCT", "0.30"))  # default 0.30%
+    dist = _pct_near(price, entry)
+    triggered = (dist <= trigger_pct) if (price and entry) else False
+
+    # % มาตรฐาน: SL 3%, TP 3/5/7
+    sl_pct = float(os.getenv("SL_PCT", "3.0"))
+    tp1_pct = float(os.getenv("TP1_PCT", "3.0"))
+    tp2_pct = float(os.getenv("TP2_PCT", "5.0"))
+    tp3_pct = float(os.getenv("TP3_PCT", "7.0"))
+
+    if direction == "SHORT":
+        stop_loss = entry * (1.0 + sl_pct / 100.0)
+        tp1 = entry * (1.0 - tp1_pct / 100.0)
+        tp2 = entry * (1.0 - tp2_pct / 100.0)
+        tp3 = entry * (1.0 - tp3_pct / 100.0)
+    else:
+        direction = "LONG"
+        stop_loss = entry * (1.0 - sl_pct / 100.0)
+        tp1 = entry * (1.0 + tp1_pct / 100.0)
+        tp2 = entry * (1.0 + tp2_pct / 100.0)
+        tp3 = entry * (1.0 + tp3_pct / 100.0)
+
+    sc = {
+        "direction": direction,
+        "confidence": conf,
+        "trade_plan": {
+            "valid": True,  # ✅ ปลดล็อคตรงนี้
+            "triggered": bool(triggered),
+            "entry": float(entry),
+            "stop_loss": float(stop_loss),
+            "take_profit_1": float(tp1),
+            "take_profit_2": float(tp2),
+            "take_profit_3": float(tp3),
+            "dist_to_entry_pct": float(dist),
+            "source": "fallback_wave_label",
+        },
+    }
+    return [sc]
+
 def run_daily_wave_job():
     print(f"=== START DAILY WAVE JOB | tf={TIMEFRAME} | symbols={len(SYMBOLS)} ===", flush=True)
-
-    # try:
-    #     balance = get_balance()
-    #     print(f"✅ Binance พร้อม | ยอด USDT = {balance:.2f}", flush=True)
-    # except Exception as e:
-    #     print(f"❌ Binance เชื่อมต่อไม่ได้: {e}", flush=True)
     print("✅ Binance: SKIP (LOCAL MODE)", flush=True)
 
     found = 0
@@ -3526,16 +3718,28 @@ def run_daily_wave_job():
                 scenarios = analysis.get("scenarios", []) or []
                 sent = False
 
+                if not scenarios:
+                    wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
+                    print(
+                        f"[{symbol}] scenarios=0 | wave={wl.get('pattern')} {wl.get('direction')} conf={wl.get('confidence')}",
+                        flush=True
+                    )
+                    break
+
                 for sc in scenarios:
                     trade = sc.get("trade_plan", {}) or {}
 
-                    if not trade.get("valid"):
+                    status = (sc.get("status") or "").upper()
+                    allowed = bool(trade.get("allowed_to_trade", False))
+                    triggered = bool(trade.get("triggered", False))
+                    valid = bool(trade.get("valid", False))
+
+                    if status != "READY":
+                        continue
+                    if not (allowed and triggered and valid):
                         continue
 
-                    if trade.get("triggered") is not True:
-                        continue
-
-                    text = format_symbol_report(analysis)       
+                    text = format_symbol_report(analysis)
                     send_message(text)
 
                     print(f"[{symbol}] SENT signal", flush=True)
@@ -3548,10 +3752,7 @@ def run_daily_wave_job():
                 if not sent:
                     wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
                     print(
-                        f"[{symbol}] no triggered signal | "
-                        f"wave={wl.get('pattern')} "
-                        f"{wl.get('direction')} "
-                        f"conf={wl.get('confidence')}",
+                        f"[{symbol}] no READY signal | wave={wl.get('pattern')} {wl.get('direction')} conf={wl.get('confidence')}",
                         flush=True
                     )
 
@@ -3565,7 +3766,6 @@ def run_daily_wave_job():
                     break
                 time.sleep(2)
 
-    # ✅ สรุปเช้า: เจอ/ไม่เจอ
     summary = []
     summary.append(f"🕖 DAILY SUMMARY ({TIMEFRAME.upper()})")
     summary.append(f"สแกน: {len(SYMBOLS)} เหรียญ")
@@ -3576,28 +3776,17 @@ def run_daily_wave_job():
     if errors:
         summary.append(f"⚠️ errors: {errors}")
 
-    # try:
-    #     balance = get_balance()
-    #     summary.append(f"💰 ยอด USDT: {balance:.2f}")
-    # except Exception:
-    #     pass
-
-    # ✅ เพิ่มตรงนี้
     summary.append("")
     summary.append("────────────────────")
     summary.append("🔵 SYSTEM: ELLIOTT-WAVE")
     summary.append("Engine: 1D")
 
     send_message("\n".join(summary), topic_id=os.getenv("TOPIC_NORMAL_ID"))
-
     print("=== END DAILY WAVE JOB ===", flush=True)
-    
+
 def run_trend_watch_job(min_conf: float = 65.0):
     """
-    Trend Watch (19:00): ใช้ 1D scenarios (ไม่ต้อง triggered)
-    - ไม่ lock position
-    - ไม่ update position
-    - แจ้งเฉพาะเหรียญที่ confidence >= min_conf
+    Trend Watch: แจ้งเหรียญที่ confidence >= min_conf
     """
     print(f"=== START TREND WATCH | tf={TIMEFRAME} | min_conf={min_conf} ===", flush=True)
 
@@ -3614,9 +3803,8 @@ def run_trend_watch_job(min_conf: float = 65.0):
 
                 scenarios = analysis.get("scenarios", []) or []
                 if not scenarios:
-                    break
+                    scenarios = _fallback_scenarios(analysis)
 
-                # ใช้ scenario อันดับ 1 (คะแนนสูงสุดใน wave_engine)
                 sc = scenarios[0]
                 conf = float(sc.get("confidence") or 0)
                 if conf < float(min_conf):
@@ -3629,7 +3817,6 @@ def run_trend_watch_job(min_conf: float = 65.0):
                 entry = trade.get("entry")
                 entry = float(entry) if entry is not None else None
 
-                # ระยะห่างถึง entry (%)
                 dist = None
                 if entry and price:
                     dist = abs((entry - price) / price) * 100.0
@@ -3652,18 +3839,16 @@ def run_trend_watch_job(min_conf: float = 65.0):
                     break
                 time.sleep(1)
 
-    # เรียง: conf มากก่อน แล้ว dist ใกล้ก่อน
     picks.sort(key=lambda x: (-x["confidence"], x["dist"] if x["dist"] is not None else 1e9))
 
     lines = []
-    lines.append("📡 TREND WATCH (1D) — 19:00")
+    lines.append("📡 TREND WATCH (1D)")
     lines.append(f"เกณฑ์: Conf >= {int(min_conf)} | จำนวนที่น่าจับตา: {len(picks)}")
     lines.append("")
 
     if not picks:
-        lines.append("วันนี้ยังไม่มีเหรียญที่เข้าเกณฑ์ (รอดูแท่งปิด 1D ตามรอบปกติ)")
+        lines.append("วันนี้ยังไม่มีเหรียญที่เข้าเกณฑ์")
     else:
-        # กันยาวเกิน: ส่งแค่ TOP 10
         top = picks[:10]
         for i, p in enumerate(top, start=1):
             sym = p["symbol"]
@@ -3686,7 +3871,6 @@ def run_trend_watch_job(min_conf: float = 65.0):
         lines.append("")
         lines.append(f"⚠️ errors: {errors}")
 
-    # ✅ เพิ่มตรงนี้
     lines.append("")
     lines.append("────────────────────")
     lines.append("🔵 SYSTEM: ELLIOTT-WAVE")
@@ -3695,17 +3879,23 @@ def run_trend_watch_job(min_conf: float = 65.0):
     send_message("\n".join(lines), topic_id=os.getenv("TOPIC_NORMAL_ID"))
     print("=== END TREND WATCH ===", flush=True)
 
+
 def start_scheduler_loop():
     """
-    Loop เช็คเวลา 20:00 ไทย แล้วรันวันละครั้ง
+    Loop เช็คเวลา RUN_HOUR:RUN_MINUTE ไทย แล้วรันวันละครั้ง
     """
-    print("Wave Scheduler Started...")
+    print("Wave Scheduler Started...", flush=True)
+
+    last_run_date = None  # กันรันซ้ำทั้งวัน
 
     while True:
         now = datetime.now(TIMEZONE)
 
         if now.hour == RUN_HOUR and now.minute == RUN_MINUTE:
-            run_daily_wave_job()
+            today = now.date()
+            if last_run_date != today:
+                run_daily_wave_job()
+                last_run_date = today
             time.sleep(60)  # กันรันซ้ำในนาทีเดียวกัน
 
         time.sleep(20)
@@ -3792,12 +3982,52 @@ def format_symbol_report(analysis: dict) -> str:
     # Pivot list format
     pivot_lines = []
     for i, p in enumerate(pivots, start=1):
-        pivot_lines.append(
-            f"{i}) {p.get('type')} { _fmt_price(p.get('price')) }"
-        )
-
+        pivot_lines.append(f"{i}) {p.get('type')} { _fmt_price(p.get('price')) }")
     pivot_text = "\n".join(pivot_lines) if pivot_lines else "-"
 
+    # ===== ✅ NEW: สถานะ/เหตุผลการบล็อก =====
+    status = (sc.get("status") or "").upper()  # READY / WAIT / BLOCKED (จาก wave_engine)
+    blocked = sc.get("blocked_reasons") or []
+
+    # fallback เผื่อยังไม่มี status
+    allowed = bool(trade.get("allowed_to_trade", True))
+    triggered = bool(trade.get("triggered", False))
+
+    if not status:
+        if triggered and allowed:
+            status = "READY"
+        elif not allowed:
+            status = "BLOCKED"
+        else:
+            status = "WAIT"
+
+    if status == "BLOCKED" and not blocked:
+        # fallback reasons จาก flag เดิม
+        if sc.get("mtf_ok") is False or trade.get("mtf_ok") is False:
+            blocked.append("h4_confirm_block")
+        if sc.get("context_allowed") is False or trade.get("context_allowed") is False:
+            blocked.append("context_gate_block")
+        if sc.get("weekly_ok") is False or trade.get("weekly_ok") is False:
+            blocked.append("weekly_permit_block")
+
+    reason_map = {
+        "h4_confirm_block": "❌ 4H ยังไม่ยืนยัน",
+        "context_gate_block": "❌ Context gate บล็อก",
+        "weekly_permit_block": "❌ Weekly permit บล็อก",
+    }
+    blocked_lines = []
+    for r in blocked:
+        blocked_lines.append(reason_map.get(str(r), f"❌ {r}"))
+    blocked_text = "\n".join(blocked_lines) if blocked_lines else "-"
+
+    if status == "READY":
+        status_line = "พร้อมเข้า (TRIGGERED)"
+    elif status == "WAIT":
+        status_line = "รอการยืนยัน (WAIT)"
+    else:
+        status_line = "ถูกบล็อก (BLOCKED)"
+
+    # ===== report text =====
     text = f"""
 ════════════════════════════
 👑 VIP รายงานเชิงลึก — {symbol} (1D)
@@ -3843,12 +4073,12 @@ TP3: {_fmt_price(tp3) if tp3 else '-'}
 แนวต้านใกล้สุด: {_fmt_price(resist) if resist else '-'}
 
 ────────────────────
-สถานะสัญญาณ: {"พร้อมเข้า (TRIGGERED)" if trade.get("triggered") else "รอการยืนยัน (WAIT)"}
-ระบบจะปิดสถานะเมื่อ:
-- ถึง SL หรือ
-- ถึง TP3 เท่านั้น
+สถานะสัญญาณ: {status_line}
+เหตุผล/เงื่อนไขที่ติด:
+{blocked_text}
 ════════════════════════════
 """.strip()
+
     footer = "\n\n────────────────────\n🔵 SYSTEM: ELLIOTT-WAVE\nEngine: 1D\n"
     return text + footer
 ===== app/state/__init__.py =====
@@ -4305,22 +4535,24 @@ def cancel_order(symbol: str, order_id: int) -> dict:
 
 ===== app/trading/position_sizer.py =====
 # app/trading/position_sizer.py
-# คำนวณขนาด position จากงบและ risk %
 
 def calculate_quantity(balance: float, risk_pct: float, entry: float, sl: float) -> float:
     """
-    balance  = ยอดเงินใน wallet (USDT)
-    risk_pct = % ที่ยอมเสียต่อไม้ เช่น 0.02 = 2%
+    balance  = เงินในพอร์ต (USDT)
+    risk_pct = % เสี่ยงต่อไม้ เช่น 0.5% = 0.005
     entry    = ราคาเข้า
     sl       = stop loss
-    return   = จำนวน coin ที่ซื้อ
+    return   = จำนวนเหรียญ (qty)
     """
+
     risk_amount = balance * risk_pct
     sl_distance = abs(entry - sl)
+
     if sl_distance <= 0:
         return 0.0
-    return round(risk_amount / sl_distance, 3)
 
+    qty = risk_amount / sl_distance
+    return round(qty, 6)
 ===== app/trading/trade_executor.py =====
 # app/trading/trade_executor.py
 
@@ -4328,6 +4560,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=False)
+
+import os
+DRY_RUN = os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
 
 from app.trading.binance_trader import (
     get_balance,
@@ -4342,7 +4577,7 @@ from app.trading.position_sizer import calculate_quantity
 from app.state.position_manager import lock_new_position, get_active
 from app.config.wave_settings import TIMEFRAME
 
-RISK_PCT = 0.05        # เสี่ยง 5% ต่อไม้
+RISK_PCT = 0.05   # เสี่ยง 5% ต่อไม้
 MIN_RR_AFTER_FILL = 1.6  # RR ขั้นต่ำหลัง fill จริง
 
 
@@ -4351,19 +4586,16 @@ def _get_actual_entry(order: dict, entry_est: float) -> float:
     ดึง fill price จริงจาก order response
     ลำดับ: avgPrice → fills[] weighted avg → entry_est (fallback)
     """
-    # 1) avgPrice ตรง ๆ
     avg = float(order.get("avgPrice") or 0)
     if avg > 0:
         return avg
 
-    # 2) weighted avg จาก fills[]
     fills = order.get("fills") or []
     if fills:
         total_qty = sum(float(f["qty"]) for f in fills)
         if total_qty > 0:
             return sum(float(f["price"]) * float(f["qty"]) for f in fills) / total_qty
 
-    # 3) fallback
     return entry_est
 
 
@@ -4384,7 +4616,7 @@ def _recalculate_plan(
     if risk <= 0:
         return {"valid": False, "reason": "risk=0 (entry==sl)"}
 
-    rr = abs(tp_rr)  # กัน negative
+    rr = abs(tp_rr)
 
     if direction == "LONG":
         tp1 = actual_entry + risk * 1.0
@@ -4425,20 +4657,45 @@ def execute_signal(signal: dict) -> bool:
         print(f"⚠️ [{symbol}] มี position อยู่แล้ว")
         return False
 
-    # ── คำนวณ quantity จาก estimated entry ──
+    # ✅ DRY RUN
+    if DRY_RUN:
+        balance = float(signal.get("balance") or os.getenv("DRY_BALANCE", "178"))
+        quantity = calculate_quantity(balance, RISK_PCT, entry_est, sl_orig)
+
+        if quantity <= 0:
+            print(f"❌ [{symbol}] quantity = 0")
+            return False
+
+        print("🧪 DRY_RUN=1 → ไม่ยิงออเดอร์จริง")
+        print(f"[{symbol}] side={open_side} balance={balance} qty={quantity} entry_est={entry_est} sl={sl_orig} tp2={tp2_orig}")
+        return True
+
+    # ── ของจริง ──
     balance  = get_balance()
     quantity = calculate_quantity(balance, RISK_PCT, entry_est, sl_orig)
+
     if quantity <= 0:
-        print(f"❌ [{symbol}] quantity = 0 (ยอดไม่พอหรือ SL ชิดเกิน)")
+        print(f"❌ [{symbol}] quantity = 0")
         return False
+
+    # ---- CAP SIZE BY MARGIN ----
+    LEVERAGE = 10
+    MAX_MARGIN_PCT = 0.10
+
+    max_notional = balance * MAX_MARGIN_PCT * LEVERAGE
+    notional = quantity * entry_est
+
+    if notional > max_notional and entry_est > 0:
+        quantity = round(max_notional / entry_est, 6)
 
     # ── เตรียม leverage / margin ──
     set_margin_type(symbol, "ISOLATED")
-    set_leverage(symbol, 10)
+    set_leverage(symbol, LEVERAGE)
 
     # ── เปิดออเดอร์ ──
     order = open_market_order(symbol, open_side, quantity)
     order_id = order.get("orderId")
+
     if not order_id:
         print(f"❌ [{symbol}] เปิดออเดอร์ไม่สำเร็จ")
         return False
@@ -4446,13 +4703,11 @@ def execute_signal(signal: dict) -> bool:
     # ── ดึง fill price จริง ──
     actual_entry = _get_actual_entry(order, entry_est)
     slip_pct = abs(actual_entry - entry_est) / entry_est * 100 if entry_est > 0 else 0
-    print(f"✅ [{symbol}] fill = {actual_entry:.6f} | est = {entry_est:.6f} | slip = {slip_pct:.3f}%")
+    print(f"✅ [{symbol}] fill = {actual_entry:.6f} | slip = {slip_pct:.3f}%")
 
-    # ── คำนวณ tp_rr ratio จาก estimated plan ──
     risk_est = abs(entry_est - sl_orig)
     tp_rr = abs(tp2_orig - entry_est) / risk_est if risk_est > 0 else 1.618
 
-    # ── recalculate SL/TP จาก fill price จริง ──
     plan = _recalculate_plan(
         direction=direction,
         actual_entry=actual_entry,
@@ -4460,43 +4715,35 @@ def execute_signal(signal: dict) -> bool:
         tp_rr=tp_rr,
     )
 
-    # ── validate RR หลัง fill ──
     if not plan["valid"]:
-        print(f"❌ [{symbol}] plan ไม่ valid: {plan['reason']} → ปิด position ทันที")
+        print(f"❌ [{symbol}] plan invalid → emergency close")
         _emergency_close(symbol, direction, quantity)
         return False
 
     if plan["rr"] < MIN_RR_AFTER_FILL:
-        print(
-            f"❌ [{symbol}] RR หลัง fill = {plan['rr']} < {MIN_RR_AFTER_FILL} "
-            f"(slip={slip_pct:.3f}%) → ปิด position ทันที"
-        )
+        print(f"❌ [{symbol}] RR ต่ำเกิน → emergency close")
         _emergency_close(symbol, direction, quantity)
         return False
 
     sl_final  = plan["sl"]
-    tp1_final = plan["tp1"]
-    tp2_final = plan["tp2"]
     tp3_final = plan["tp3"]
 
-    print(f"📐 [{symbol}] RR = {plan['rr']} | risk = {plan['risk']} | SL = {sl_final:.6f} | TP3 = {tp3_final:.6f}")
+    print(f"📐 RR={plan['rr']} | SL={sl_final:.6f} | TP3={tp3_final:.6f}")
 
-    # ── ตั้ง SL / TP บน exchange ──
     try:
         set_stop_loss(symbol, open_side, quantity, sl_final)
-        print(f"✅ [{symbol}] SL = {sl_final}")
+        print(f"✅ SL set")
     except Exception as e:
-        print(f"❌ [{symbol}] ตั้ง SL ล้มเหลว: {e} → ปิด position ทันที")
+        print(f"❌ SL fail → emergency close")
         _emergency_close(symbol, direction, quantity)
         return False
 
     try:
         set_take_profit(symbol, open_side, quantity, tp3_final)
-        print(f"✅ [{symbol}] TP3 = {tp3_final}")
+        print(f"✅ TP3 set")
     except Exception as e:
-        print(f"⚠️ [{symbol}] ตั้ง TP ล้มเหลว: {e} (SL ตั้งแล้ว — position ยังอยู่)")
+        print(f"⚠️ TP fail แต่ SL ยังอยู่")
 
-    # ── lock position ด้วย actual plan ──
     lock_new_position(
         symbol=symbol,
         timeframe=TIMEFRAME,
@@ -4504,15 +4751,12 @@ def execute_signal(signal: dict) -> bool:
         trade_plan={
             "entry": actual_entry,
             "sl":    sl_final,
-            "tp1":   tp1_final,
-            "tp2":   tp2_final,
             "tp3":   tp3_final,
         },
     )
 
-    print(f"🟢 [{symbol}] execute_signal สำเร็จ | direction={direction} | RR={plan['rr']}")
+    print(f"🟢 execute_signal สำเร็จ")
     return True
-
 
 def _emergency_close(symbol: str, direction: str, quantity: float) -> None:
     """ปิด position ทันทีด้วย market order ฝั่งตรงข้าม"""
@@ -4522,3 +4766,4 @@ def _emergency_close(symbol: str, direction: str, quantity: float) -> None:
         print(f"🔴 [{symbol}] ปิด position (emergency close) สำเร็จ")
     except Exception as e:
         print(f"🚨 [{symbol}] emergency close ล้มเหลว! ต้องปิดมือ: {e}")
+
