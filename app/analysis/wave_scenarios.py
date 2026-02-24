@@ -34,7 +34,6 @@ def score_scenario(base_score, warnings, macro_trend, rsi14, volume_spike, direc
 
     return max(min(score, 100), 1)
 
-
 def normalize_scores(scenarios: List[Dict]) -> List[Dict]:
     total = sum(s["score"] for s in scenarios) or 1.0
     for s in scenarios:
@@ -42,7 +41,6 @@ def normalize_scores(scenarios: List[Dict]) -> List[Dict]:
         s["probability"] = s["relative_score"]  # backward compat
         s["confidence"] = round(float(s["score"]), 1)
     return scenarios
-
 
 def build_scenarios(
     pivots: List[Dict],
@@ -112,21 +110,39 @@ def build_scenarios(
         last4 = pivots[-4:]
         fb_reasons = ["fallback: rules not satisfied yet (keep watching)"]
 
+        # ✅ FIX: ลดคะแนน fallback ให้ต่ำกว่า threshold ทุกกรณี (watchlist only)
         scenarios.append({
             "type": "ABC_UP",
-            "phase": "Fallback (watchlist)",
+            "phase": "Fallback (watchlist only)",
             "direction": "LONG",
-            "score": score_scenario(50, fb_reasons, macro_trend, rsi14, volume_spike, direction="LONG"),
+            "score": score_scenario(
+                30,
+                fb_reasons,
+                macro_trend,
+                rsi14,
+                volume_spike,
+                "LONG",
+            ),
             "reasons": fb_reasons,
             "pivots": last4,
+            "is_fallback": True,
         })
+
         scenarios.append({
             "type": "ABC_DOWN",
-            "phase": "Fallback (watchlist)",
+            "phase": "Fallback (watchlist only)",
             "direction": "SHORT",
-            "score": score_scenario(50, fb_reasons, macro_trend, rsi14, volume_spike, direction="SHORT"),
+            "score": score_scenario(
+                30,
+                fb_reasons,
+                macro_trend,
+                rsi14,
+                volume_spike,
+                "SHORT",
+            ),
             "reasons": fb_reasons,
             "pivots": last4,
+            "is_fallback": True,
         })
 
     if not scenarios:

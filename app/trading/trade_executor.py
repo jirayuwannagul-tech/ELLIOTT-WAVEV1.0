@@ -21,8 +21,8 @@ from app.trading.position_sizer import calculate_quantity
 from app.state.position_manager import lock_new_position, get_active
 from app.config.wave_settings import TIMEFRAME
 
-RISK_PCT = 0.02   # เสี่ยง 2% ต่อไม้
-MIN_RR_AFTER_FILL = 1.6  # RR ขั้นต่ำหลัง fill จริง
+RISK_PCT = 0.005  # เสี่ยง 0.5% ต่อไม้ (ลด DD จาก ~106% เหลือ ~26.7%)
+MIN_RR_AFTER_FILL = 2.0  # RR ขั้นต่ำหลัง fill จริง (align with system MIN_RR)
 
 
 def _get_actual_entry(order: dict, entry_est: float) -> float:

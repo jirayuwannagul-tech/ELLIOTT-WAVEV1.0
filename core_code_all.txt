@@ -2120,7 +2120,6 @@ def portfolio_simulator(
         "trades_detail": closed if return_trades_detail else None,
     }
 
-
 # ---------------------------------------------------------------------------
 # __main__
 # ---------------------------------------------------------------------------
@@ -2144,11 +2143,12 @@ RUN_HOUR = 7
 RUN_MINUTE = 5
 
 SYMBOLS = [
-    "BTCUSDT", "DOGEUSDT", "TIAUSDT", "AAVEUSDT", "ATOMUSDT",
-    "SEIUSDT", "ALGOUSDT", "NEOUSDT", "WLDUSDT", "TRXUSDT",
-    "ZILUSDT", "STXUSDT", "OPUSDT", "FTMUSDT", "ADAUSDT",
-    "SOLUSDT", "ARBUSDT", "XRPUSDT", "EGLDUSDT", "FILUSDT",
-    "BNBUSDT", "MATICUSDT", "AVAXUSDT",
+    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","BNBUSDT","BCHUSDT",
+    "ZECUSDT","SUIUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","FILUSDT","LTCUSDT",
+    "DOTUSDT","UNIUSDT","NEARUSDT","AAVEUSDT","OPUSDT","ARBUSDT","TRXUSDT",
+    "APTUSDT","HBARUSDT","INJUSDT","XLMUSDT","AXSUSDT","XMRUSDT","SNXUSDT",
+    "ETCUSDT","CRVUSDT","DASHUSDT","UMAUSDT","ICPUSDT","ATOMUSDT","LPTUSDT",
+    "GALAUSDT","ZILUSDT","DUSKUSDT",
 ]
 
 FRACTAL_LEFT = 2
@@ -4577,7 +4577,7 @@ from app.trading.position_sizer import calculate_quantity
 from app.state.position_manager import lock_new_position, get_active
 from app.config.wave_settings import TIMEFRAME
 
-RISK_PCT = 0.05   # เสี่ยง 5% ต่อไม้
+RISK_PCT = 0.02   # เสี่ยง 2% ต่อไม้
 MIN_RR_AFTER_FILL = 1.6  # RR ขั้นต่ำหลัง fill จริง
 
 

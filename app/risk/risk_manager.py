@@ -13,39 +13,20 @@ def calculate_rr(entry: float, sl: float, tp: float) -> float:
         return 0.0
     return reward / risk
 
-
 def _safe_fib_extension(
     p0: float,
     p1: float,
     anchor: float,
     direction: str,
     base_len: float,
-) -> Dict:
-    """
-    คำนวณ fib extension ในทิศทางที่ถูกต้องเสมอ
-
-    FIX: เปลี่ยนจากการพึ่ง signed math ของ fib_extension(p0, p1, anchor)
-    มาใช้ direction + base_len โดยตรง
-
-    สาเหตุ bug เดิม:
-    - fib_extension คำนวณ length = b - a (signed)
-    - fallback scenario สร้าง ABC_UP + ABC_DOWN ด้วย pivots ชุดเดียวกัน
-    - pivot type ผิด → length มีเครื่องหมายผิด → targets ผิดทิศ
-    - fallback path คำนวณราคาติดลบ (nonsensical)
-
-    FIX: ใช้ base_len (always positive) + direction เท่านั้น
-    ไม่ขึ้นกับ p0/p1 เลย (เก็บ signature เดิมเพื่อไม่ต้องแก้ call sites)
-    """
+) -> Optional[Dict]:
     direction = (direction or "").upper()
 
-    # คำนวณ base_len จาก p0/p1 ถ้าไม่มี หรือ = 0
     if base_len <= 0:
         base_len = abs(p1 - p0)
-
-    # ถ้ายังเป็น 0 = ข้อมูลเสีย → fallback เป็น 3% ของ anchor
     if base_len <= 0:
-        logger.warning(f"fib_extension: base_len=0 (p0={p0}, p1={p1}) → ใช้ 3% of anchor")
-        base_len = abs(anchor) * 0.03 if anchor > 0 else 1.0
+        logger.warning(f"fib_extension: base_len<=0 (p0={p0}, p1={p1}) -> return None")
+        return None
 
     if direction == "LONG":
         t1 = anchor + base_len * 1.0
@@ -56,19 +37,15 @@ def _safe_fib_extension(
         t2 = anchor - base_len * 1.618
         t3 = anchor - base_len * 2.0
 
-    # Guard: ราคาต้องไม่ติดลบ (เกิดได้เฉพาะ SHORT ที่ anchor น้อยมาก)
-    if t3 <= 0:
+    # ✅ invalidate แทน cap
+    if t1 <= 0 or t2 <= 0 or t3 <= 0:
         logger.warning(
-            f"fib_extension: t3={t3:.4f} <= 0 (anchor={anchor}, base_len={base_len}) "
-            f"→ cap ที่ 1% ของ anchor"
+            f"fib_extension: invalid targets (t1={t1:.6f}, t2={t2:.6f}, t3={t3:.6f}) "
+            f"anchor={anchor}, base_len={base_len} -> return None"
         )
-        min_price = abs(anchor) * 0.01
-        t3 = max(t3, min_price)
-        t2 = max(t2, min_price)
-        t1 = max(t1, min_price)
+        return None
 
     return {"1.0": t1, "1.618": t2, "2.0": t3}
-
 
 def build_trade_plan(
     scenario: Dict,
@@ -157,6 +134,9 @@ def build_trade_plan(
             # FIX: ส่ง direction="SHORT" + a_len โดยตรง
             # ไม่พึ่ง signed math (h0, l1 อาจผิด type ในกรณี fallback)
             fib = _safe_fib_extension(h0, l1, entry, "SHORT", a_len)
+            if fib is None:
+                trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
+                return trade
             tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
             if sr:
@@ -179,6 +159,9 @@ def build_trade_plan(
 
             # FIX: ส่ง direction="LONG" + a_len โดยตรง
             fib = _safe_fib_extension(l0, h1, entry, "LONG", a_len)
+            if fib is None:
+                trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
+                return trade
             tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
             if sr:
@@ -215,6 +198,9 @@ def build_trade_plan(
 
     # FIX: ส่ง direction + base_len โดยตรง (ไม่พึ่ง signed math)
     fib = _safe_fib_extension(p0, p1, entry, direction, base_len)
+    if fib is None:
+        trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
+        return trade
     tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
     if direction == "LONG":

@@ -184,6 +184,29 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     df = add_atr(df, length=14)
     df = add_volume_ma(df, length=20)
 
+    # --- ATR Gate (align with backtest): ต้องเป็น compression ก่อน ---
+    atr = float(df["atr14"].iloc[-1])
+    atr_ma50 = float(df["atr14"].rolling(50).mean().iloc[-1]) if len(df) >= 50 else 0.0
+
+    if atr_ma50 > 0 and atr >= atr_ma50:
+        # ตลาดยังไม่ compress → ไม่เข้าเงื่อนไข (return base payload)
+        return {
+            "symbol": symbol,
+            "price": float(df["close"].iloc[-1]),
+            "scenarios": [],
+            "message": "ATR_GATE: ตลาดยังไม่ compress",
+            "mode": detect_market_mode(df),
+            "macro_trend": trend_filter_ema(df),
+            "rsi14": float(df["rsi14"].iloc[-1]),
+            "volume_spike": False,
+            "mtf": {},
+            "wave_label": {"label": None, "matches": []},
+            "sideway": None,
+            "zones": [],
+            "sr": {},
+            "position_size_mult": 1.0,
+        }
+
     last_close = float(df["close"].iloc[-1])
     current_price = last_close
     close_today = last_close
@@ -253,6 +276,14 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
 
     normalized: List[Dict] = []
     for sc in scenarios:
+        # ✅ HARD BLOCK: fallback scenarios must never be tradable
+        if sc.get("is_fallback"):
+            sc2 = dict(sc)
+            sc2["context_allowed"] = False
+            sc2["context_reason"] = "fallback_scenario_blocked"
+            normalized.append(sc2)
+            continue
+
         gated = apply_context_gate(
             scenario=sc,
             macro_bias=macro_bias,
