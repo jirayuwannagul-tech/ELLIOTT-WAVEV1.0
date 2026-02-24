@@ -188,6 +188,7 @@ def execute_signal(signal: dict) -> bool:
     except Exception as e:
         print(f"⚠️ TP fail แต่ SL ยังอยู่")
 
+    # ✅ แก้เป็น (plan มี tp1/tp2 อยู่แล้วจาก _recalculate_plan)
     lock_new_position(
         symbol=symbol,
         timeframe=TIMEFRAME,
@@ -195,6 +196,8 @@ def execute_signal(signal: dict) -> bool:
         trade_plan={
             "entry": actual_entry,
             "sl":    sl_final,
+            "tp1":   plan["tp1"],   # ← เพิ่ม
+            "tp2":   plan["tp2"],   # ← เพิ่ม
             "tp3":   tp3_final,
         },
     )

@@ -137,11 +137,10 @@ def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> d
     sl_price = adjust_price(symbol, sl_price)
 
     params: dict[str, Any] = {
-        "algoType":      "CONDITIONAL",
         "symbol":        symbol,
         "side":          close_side,
         "type":          "STOP_MARKET",
-        "triggerPrice":  sl_price,
+        "stopPrice":     sl_price,        # เปลี่ยน triggerPrice → stopPrice
         "closePosition": "true",
         "workingType":   "CONTRACT_PRICE",
         "timestamp":     int(time.time() * 1000),
@@ -152,7 +151,7 @@ def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> d
 
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
-    r = requests.post(f"{FUTURES_URL}/fapi/v1/algoOrder", params=params, headers=headers, timeout=10)
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
     print(f"SL response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
@@ -172,11 +171,10 @@ def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) ->
     tp_price = adjust_price(symbol, tp_price)
 
     params: dict[str, Any] = {
-        "algoType":      "CONDITIONAL",
         "symbol":        symbol,
         "side":          close_side,
         "type":          "TAKE_PROFIT_MARKET",
-        "triggerPrice":  tp_price,
+        "stopPrice":     tp_price,        # เปลี่ยน triggerPrice → stopPrice
         "closePosition": "true",
         "workingType":   "CONTRACT_PRICE",
         "timestamp":     int(time.time() * 1000),
@@ -187,7 +185,7 @@ def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) ->
 
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
-    r = requests.post(f"{FUTURES_URL}/fapi/v1/algoOrder", params=params, headers=headers, timeout=10)
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
     print(f"TP response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
