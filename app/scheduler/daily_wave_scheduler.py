@@ -104,13 +104,13 @@ def _fallback_scenarios(analysis: dict) -> list:
         "direction": direction,
         "confidence": conf,
         "trade_plan": {
-            "valid": True,  # ✅ ปลดล็อคตรงนี้
+            "valid": True,
             "triggered": bool(triggered),
             "entry": float(entry),
-            "stop_loss": float(stop_loss),
-            "take_profit_1": float(tp1),
-            "take_profit_2": float(tp2),
-            "take_profit_3": float(tp3),
+            "sl": float(stop_loss),
+            "tp1": float(tp1),
+            "tp2": float(tp2),
+            "tp3": float(tp3),
             "dist_to_entry_pct": float(dist),
             "source": "fallback_wave_label",
         },

@@ -196,8 +196,8 @@ def execute_signal(signal: dict) -> bool:
         trade_plan={
             "entry": actual_entry,
             "sl":    sl_final,
-            "tp1":   plan["tp1"],   # ← เพิ่ม
-            "tp2":   plan["tp2"],   # ← เพิ่ม
+            "tp1":   plan["tp1"],
+            "tp2":   plan["tp2"],
             "tp3":   tp3_final,
         },
     )
