@@ -39,7 +39,53 @@ INVALID_REASONS = Counter()
 # ---------------------------------------------------------------------------
 
 def _prepare_df(symbol: str, interval: str, limit: int) -> Optional[pd.DataFrame]:
-    """Fetch + drop unclosed + add indicators. คืน None ถ้าข้อมูลไม่พอ"""
+    """
+    โหลดจาก SQLite (data/market.db) ก่อน
+    ถ้าไม่มีข้อมูลพอ ค่อย fallback ไป fetch_ohlcv เดิม
+    """
+    # --- 1) try sqlite first ---
+    try:
+        import sqlite3
+
+        con = sqlite3.connect("data/market.db")
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT ts, open, high, low, close, volume
+            FROM ohlcv
+            WHERE symbol=? AND timeframe=?
+            ORDER BY ts DESC
+            LIMIT ?
+            """,
+            (symbol, interval, int(limit)),
+        )
+        rows = cur.fetchall()
+        con.close()
+
+        if rows and len(rows) >= _START_BAR:
+            rows = list(reversed(rows))  # oldest -> newest
+            df = pd.DataFrame(
+                rows,
+                columns=["ts", "open", "high", "low", "close", "volume"],
+            )
+            df["open_time"] = pd.to_datetime(df["ts"], unit="s", utc=True)
+            df = df[["open_time", "open", "high", "low", "close", "volume"]].copy()
+
+            # ensure float
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = df[col].astype(float)
+
+            # add indicators
+            df = add_ema(df, lengths=(50, 200))
+            df = add_rsi(df, length=14)
+            df = add_atr(df, length=14)
+            df = add_volume_ma(df, length=20)
+            return df
+
+    except Exception as e:
+        logger.warning(f"[{symbol}] sqlite load failed -> fallback fetch ({e})")
+
+    # --- 2) fallback: old remote fetch ---
     df = fetch_ohlcv(symbol, interval=interval, limit=limit)
     df = drop_unclosed_candle(df)
     if df is None or len(df) < _START_BAR:
@@ -230,12 +276,18 @@ def backtest_symbol(
         sc = scenarios[0]
         direction = sc["direction"]
 
-        # filters
+        # filters (เข้มขึ้น)
+        if macro_trend == "NEUTRAL":
+            continue
+
         if not allow_direction(macro_trend, direction):
             continue
-        if direction == "LONG" and rsi14 < 50:
+
+        # RSI confirmation เข้มกว่าเดิม
+        if direction == "LONG" and rsi14 <= 55:
             continue
-        if direction == "SHORT" and rsi14 > 50:
+
+        if direction == "SHORT" and rsi14 >= 45:
             continue
 
         trade_plan = build_trade_plan(sc, current_price=last_close, min_rr=min_rr)
@@ -248,6 +300,8 @@ def backtest_symbol(
         # ABC entry = current_price → triggered ทันที
         # IMPULSE entry = breakout price → เช็คปกติ
         stype = (sc.get("type") or "").upper()
+        if not stype.startswith("ABC_"):
+            continue
         if stype == "ABC_UP":
             triggered = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
         elif stype == "ABC_DOWN":
@@ -436,6 +490,61 @@ def backtest_symbol_trades(
         entry_time = df["open_time"].iloc[i]
         r = _r_multiple(direction, entry, float(trade_plan["sl"]), float(trade_plan["tp3"]), sim["result"])
 
+        # --- persist CLOSED trade to SQLite (edge dataset) ---
+        if sim["result"] in ("WIN", "LOSS", "BE"):
+            try:
+                sqlite3 = __import__("sqlite3")
+                json = __import__("json")
+
+                def _ts_to_int(ts):
+                    if ts is None:
+                        return None
+                    try:
+                        return int(ts.timestamp())  # pandas Timestamp (tz-aware)
+                    except Exception:
+                        return None
+
+                meta = {
+                    "scenario_type": sc.get("type"),
+                    "macro_trend": macro_trend,
+                    "rsi14": rsi14,
+                    "vol_spike": is_vol_spike,
+                    "confidence": conf,
+                    "trade_plan": trade_plan,
+                }
+
+                con = sqlite3.connect("data/market.db")
+                cur = con.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO trades (
+                        symbol, timeframe, entry_ts, exit_ts, direction,
+                        entry, sl, tp1, tp2, tp3,
+                        result, r_multiple, meta_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        symbol,
+                        interval,
+                        _ts_to_int(entry_time),
+                        _ts_to_int(exit_time),
+                        direction,
+                        float(entry),
+                        float(trade_plan["sl"]),
+                        float(trade_plan["tp1"]),
+                        float(trade_plan["tp2"]),
+                        float(trade_plan["tp3"]),
+                        str(sim["result"]),
+                        float(r),
+                        json.dumps(meta, ensure_ascii=False),
+                    ),
+                )
+                con.commit()
+                con.close()
+
+            except Exception as e:
+                logger.warning(f"[{symbol}] sqlite insert trade failed: {e}")
+
         trades.append({
             "trade_plan": trade_plan,
             "symbol": symbol,
@@ -480,6 +589,16 @@ def portfolio_simulator(
     - คิด equity R + Max Drawdown
     """
     all_trades: List[Dict] = []
+    # reset trades table each run (avoid accumulating rows across runs)
+    try:
+        import sqlite3
+        con = sqlite3.connect("data/market.db")
+        cur = con.cursor()
+        cur.execute("DELETE FROM trades")
+        con.commit()
+        con.close()
+    except Exception as e:
+        logger.warning(f"sqlite reset trades failed: {e}")
 
     for s in symbols:
         res = backtest_symbol_trades(
@@ -536,5 +655,5 @@ if __name__ == "__main__":
     from app.config.wave_settings import SYMBOLS
     symbols = SYMBOLS
 
-    res = portfolio_simulator(symbols, interval="1d", limit=1000, min_confidence=65)
+    res = portfolio_simulator(symbols, interval="4h", limit=1000, min_confidence=65)
     print(res)

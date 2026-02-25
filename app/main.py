@@ -15,7 +15,7 @@ _balance_cache = {
     "value": None,
     "timestamp": 0
 }
-BALANCE_CACHE_SECONDS = 60
+BALANCE_CACHE_SECONDS = 300
 
 # -------- SIMPLE RATE LIMIT --------
 _rate_limit = {}
