@@ -80,6 +80,9 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .num{font-family:'Share Tech Mono',monospace;font-variant-numeric: tabular-nums;font-feature-settings: "tnum" 1;letter-spacing: 1px;}
 .balance{font-family:'Share Tech Mono',monospace;font-size:44px;font-weight:700;color:var(--green);text-shadow:0 0 20px rgba(0,255,157,0.4);letter-spacing:1px;}
 .balance-unit{font-size:14px;opacity:0.5;margin-left:6px}
+.balance-row{display:flex;align-items:baseline;gap:18px;flex-wrap:wrap}
+.pnl-total{font-family:'Share Tech Mono',monospace;font-size:18px;font-weight:700;letter-spacing:1px;opacity:0.95}
+.pnl-label{font-size:10px;letter-spacing:2px;opacity:0.55;margin-right:6px}
 .pos-row{padding:10px 0;border-bottom:1px solid rgba(0,245,255,0.05);font-size:11px;line-height:1.8}
 .pos-row:last-child{border-bottom:none}
 .pos-sym{font-family:'Orbitron',monospace;font-size:11px;color:var(--cyan);font-weight:700}
@@ -120,7 +123,10 @@ pre::-webkit-scrollbar-thumb{background:var(--dim);border-radius:2px}
   <div class="panel">
     <div class="c1"></div><div class="c2"></div>
     <div class="panel-title">Balance</div>
-    <div class="balance"><span class="num">BALANCE_PLACEHOLDER</span><span class="balance-unit">USDT</span></div>
+    <div class="balance-row">
+      <div class="balance"><span class="num">BALANCE_PLACEHOLDER</span><span class="balance-unit">USDT</span></div>
+      <div class="pnl-total TOTAL_PNL_CLASS"><span class="pnl-label">OPEN PNL</span><span class="num">TOTAL_PNL_PLACEHOLDER</span><span class="balance-unit">USDT</span></div>
+    </div>
   </div>
 
   <div class="panel">
@@ -183,8 +189,20 @@ def dashboard():
     except Exception as e:
         balance = f"ERROR: {e}"
 
+    total_pnl = "0.00"
+    total_pnl_class = "pnl-green"
+
     try:
         positions = get_open_positions()
+        total = 0.0
+        for p in positions:
+            try:
+                total += float(p.get("unRealizedProfit") or 0)
+            except Exception:
+                pass
+        total_pnl = f"{total:+.2f}"
+        total_pnl_class = "pnl-green" if total >= 0 else "pnl-red"
+
         pos_html = ""
         for p in positions:
             sym = p["symbol"]
@@ -196,9 +214,13 @@ def dashboard():
             pos_html = "<div>NO ACTIVE POSITION</div>"
     except Exception as e:
         pos_html = f"<div>ERROR: {e}</div>"
+        total_pnl = "0.00"
+        total_pnl_class = "pnl-red"
 
     html = DASHBOARD_HTML
     html = html.replace("BALANCE_PLACEHOLDER", balance)
+    html = html.replace("TOTAL_PNL_PLACEHOLDER", total_pnl)
+    html = html.replace("TOTAL_PNL_CLASS", total_pnl_class)
     html = html.replace("POSITION_PLACEHOLDER", pos_html)
 
     try:
@@ -330,7 +352,6 @@ def debug_attach(symbol: str):
             return f"OK attached SL/TP to {symbol}", 200
 
     return "NO ACTIVE POSITION", 404
-
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "run":
