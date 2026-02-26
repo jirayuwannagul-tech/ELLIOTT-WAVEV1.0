@@ -7,7 +7,7 @@
 บอทเทรด crypto อัตโนมัติบน Binance Futures
 - วิเคราะห์รูปแบบ Elliott Wave จาก pivot points
 - Timeframe หลัก: 1D
-- 23 symbols
+- 38 symbols
 - ส่ง signal ผ่าน Telegram
 
 ---
@@ -15,31 +15,102 @@
 ## สถาปัตยกรรม Deployment
 
 ```
-VS Code (local)
-    │
-    │  git push
-    ▼
-GitHub (repo)
-    │
-    │  auto-deploy (push trigger)
-    ├──────────────────────────────▶ Railway
-    │                                  │  วิเคราะห์ Elliott Wave
-    │                                  │  คำนวณ signal
-    │                                  │  ส่ง /execute ไป VPS
-    │                                  │  (Railway ไม่มี whitelist IP
-    │                                  │   จึงส่งตรง Binance ไม่ได้)
-    │                                  │
-    │                                  ▼
-    └──────────────────────────────▶ VPS (whitelist IP)
-                                       │  รับ signal จาก Railway
-                                       │  เปิด/ปิด position บน Binance Futures
-                                       ▼
-                                   Binance Futures API
+┌──────────────────────────────────────────────────────────────┐
+│                           app/                               │
+├──────────────────────────────────────────────────────────────┤
+│ data/        → ดึง/ส่งออกข้อมูล (Binance → csv / sqlite)     │
+│ indicators/  → คำนวณ EMA/RSI/ATR/Volume/Trend                │
+│ analysis/    → สมอง: pivots→wave→scenarios→gates→trade_plan   │
+│ risk/        → แผน SL/TP + RR gate (build_trade_plan)        │
+│ scheduler/   → งานประจำวัน (run_daily / trend-watch)         │
+│ services/    → ส่งออก (Telegram report)                       │
+│ trading/     → ยิงออเดอร์จริง + ตั้ง SL/TP + watcher TP/SL    │
+│ state/       → เก็บสถานะ positions.db (ACTIVE/CLOSED)         │
+│ performance/ → dashboard /performance (R, DD, equity)          │
+│ main.py      → Flask API + Dashboard + routes                 │
+└──────────────────────────────────────────────────────────────┘
+
+CSV/SQLite (data/)
+   │
+   ▼
+Indicators (indicators/)
+   │
+   ▼
+Wave Engine (analysis/) ──► Risk Plan (risk/)
+   │                          │
+   │                          ▼
+   ├──► Scheduler (scheduler/) ──► Telegram (services/)
+   │
+   └──► /execute (main.py) ──► trade_executor (trading/)
+                               │
+                               ▼
+                     Binance Futures (binance_trader)
+                               │
+                               ▼
+                    positions.db (state/)
+                               │
+                               ▼
+                  position_watcher (trading/)
+                               │
+                               ▼
+                 performance dashboard (performance/)
+
+Scheduler พบ READY
+→ ส่งข้อความ
+→ /execute รับ payload
+→ trade_executor:
+   - กันเปิดซ้ำ (get_active)
+   - คำนวณ qty
+   - เปิด market
+   - ได้ fill จริง → คำนวณ SL/TP ใหม่
+   - RR ต่ำ → emergency close
+   - ตั้ง SL/TP (algoOrder)
+   - lock_new_position ลง DB
+→ position_watcher เฝ้า TP1/TP2/TP3/SL แล้วอัปเดต DB
+
 ```
 
 ### Flow การทำงาน
 1. **VS Code** → แก้โค้ด → `git push` ไป GitHub
 2. **GitHub** → trigger auto-deploy ไป Railway และ VPS พร้อมกัน
+
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: SSH Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            set -e
+
+            echo "== CD PROJECT =="
+            cd /root/ELLIOTT-WAVEV1.0
+
+            echo "== GIT PULL =="
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "== INSTALL REQUIREMENTS =="
+            pip3 install -r requirements.txt
+
+            echo "== RESTART SERVICE =="
+            systemctl restart elliott
+
+            echo "== DONE =="
+
 3. **Railway** → รัน `analyze_symbol()` ทุกเช้า 07:05 → ส่ง signal ผ่าน POST `/execute` ไป VPS
 4. **VPS** → รับ signal → เรียก Binance Futures API (IP ของ VPS ถูก whitelist ไว้)
 5. **Binance** → เปิด/ปิด position ตาม trade plan
@@ -83,43 +154,6 @@ elliott-wave-system/
 ```
 
 ---
-
-## Filter ทั้งหมด 12 ตัว
-
-| ID | ชื่อ | ไฟล์ | Live | Backtest | ประเภท |
-|----|------|------|------|----------|--------|
-| 1 | data_length | wave_engine.py | ✅ | ✅ | HARD |
-| 2 | sideway_split | trend_detector.py | ✅ | ❌ | REDIRECT |
-| 3 | pivot_count | wave_engine.py | ✅ | ✅ | HARD |
-| 4 | min_confidence | context_gate.py | ✅ | ✅ | HARD |
-| 5 | macro_bias_direction | context_gate.py | ✅ | ✅ | HARD |
-| 6 | weekly_permit | multi_tf.py | ✅ | ❌ | HARD |
-| 7 | h4_confirm | multi_tf.py | ✅ | ❌ | SOFT |
-| 8 | rr_valid | risk_manager.py | ✅ | ✅ | HARD |
-| 9 | trigger_price | wave_engine.py | ✅ | ✅ | HARD |
-| 10 | atr_compression | backtest_runner.py | ❌ | ✅ | HARD |
-| 11 | trend_direction | trend_filter.py | ❌ | ✅ | HARD |
-| 12 | rsi_midline | backtest_runner.py | ❌ | ✅ | HARD |
-
----
-
-## ผลทดสอบ filter_test.py (Feb 2026)
-Baseline: 3 symbols (BTC, DOGE, TIA), 42 trades, winrate 30%
-
-| Filter ปิด | trades | diff | winrate |
-|---|---|---|---|
-| F_ATR_COMPRESSION | 46 | +4 | 23% ↓ |
-| F_TREND_DIRECTION | 42 | 0 | 30% = |
-| F_RSI_MIDLINE | 48 | +6 | 28% ↓ |
-| F_MIN_CONFIDENCE | 74 | +32 | 22% ↓ |
-| F_MACRO_BIAS | 42 | 0 | 30% = |
-| F_RR_VALID | 42 | 0 | 30% = |
-| F_TRIGGER_PRICE | 43 | +1 | 29% ↓ |
-
-**พบว่า:** F_TREND_DIRECTION, F_MACRO_BIAS, F_RR_VALID ปิดแล้วไม่มีผล → สาเหตุที่พบและแก้ไขแล้ว (Feb 2026):
-- F_MACRO_BIAS: threshold `strength >= 60` สูงเกิน → แก้เป็น `>= 50` แล้ว
-- F_RR_VALID: `_force_minimal_trade_plan` bypass valid=True → ลบออกแล้ว
-- F_TREND_DIRECTION: อยู่ใน backtest_runner.py เท่านั้น ไม่มีใน live → รอแก้รอบถัดไป
 
 ---
 

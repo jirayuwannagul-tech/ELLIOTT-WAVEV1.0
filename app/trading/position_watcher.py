@@ -42,10 +42,29 @@ def _loop():
 
                 live = _find_live_position(sym)
                 if not live:
-                    # ถ้าใน Binance ไม่มีแล้ว → ปิดใน DB
+                    try:
+                        from app.trading.binance_trader import get_last_filled_order
+                        last_order = get_last_filled_order(sym)
+                    except Exception:
+                        last_order = None
+
+                    now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+                    if last_order:
+                        order_type = last_order.get("type", "")
+                        if order_type == "STOP_MARKET":
+                            pos.sl_hit = True
+                            pos.closed_reason = "SL"
+                        elif order_type == "TAKE_PROFIT_MARKET":
+                            pos.tp3_hit = True
+                            pos.closed_reason = "TP3"
+                        else:
+                            pos.closed_reason = "EXTERNAL_CLOSE"
+                    else:
+                        pos.closed_reason = pos.closed_reason or "EXTERNAL_CLOSE"
+
                     pos.status = "CLOSED"
-                    pos.closed_reason = pos.closed_reason or "EXTERNAL_CLOSE"
-                    pos.closed_at = pos.closed_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    pos.closed_at = pos.closed_at or now_str
                     _save_position(_key(sym, pos.timeframe), asdict(pos))
                     continue
 
@@ -57,7 +76,6 @@ def _loop():
                 direction = (pos.direction or "").upper()
                 mark = float(live.get("markPrice") or 0) or get_mark_price(sym)
 
-                # ฝั่งปิด + positionSide
                 if amt > 0:
                     close_side = "SELL"
                     pos_side = "LONG"
@@ -68,7 +86,6 @@ def _loop():
                 if not IS_HEDGE_MODE:
                     pos_side = None
 
-                # SL ก่อน
                 sl_hit = (mark <= pos.sl) if direction == "LONG" else (mark >= pos.sl)
                 if (not pos.sl_hit) and sl_hit:
                     if _close_qty(sym, close_side, cur_qty, pos_side):
@@ -80,7 +97,6 @@ def _loop():
                         _save_position(_key(sym, pos.timeframe), asdict(pos))
                     continue
 
-                # TP1
                 tp1_hit = (mark >= pos.tp1) if direction == "LONG" else (mark <= pos.tp1)
                 if (not pos.tp1_hit) and tp1_hit:
                     q = min(cur_qty, pos.qty * W1)
@@ -89,7 +105,6 @@ def _loop():
                         pos.remaining_qty = max(0.0, pos.remaining_qty - q)
                         _save_position(_key(sym, pos.timeframe), asdict(pos))
 
-                # TP2
                 tp2_hit = (mark >= pos.tp2) if direction == "LONG" else (mark <= pos.tp2)
                 if (not pos.tp2_hit) and tp2_hit:
                     q = min(cur_qty, pos.qty * W2)
@@ -98,7 +113,6 @@ def _loop():
                         pos.remaining_qty = max(0.0, pos.remaining_qty - q)
                         _save_position(_key(sym, pos.timeframe), asdict(pos))
 
-                # TP3 (ปิดที่เหลือทั้งหมด)
                 tp3_hit = (mark >= pos.tp3) if direction == "LONG" else (mark <= pos.tp3)
                 if (not pos.tp3_hit) and tp3_hit:
                     if _close_qty(sym, close_side, cur_qty, pos_side):
@@ -109,8 +123,10 @@ def _loop():
                         pos.remaining_qty = 0.0
                         _save_position(_key(sym, pos.timeframe), asdict(pos))
 
-        except Exception:
-            pass
+        except Exception as e:
+            import traceback
+            print("WATCHER_ERROR:", e, flush=True)
+            print(traceback.format_exc(), flush=True)
 
         time.sleep(WATCH_SEC)
 

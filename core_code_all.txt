@@ -3236,6 +3236,11 @@ app = Flask(__name__)
 
 from app.performance.dashboard import perf_bp
 app.register_blueprint(perf_bp)
+# หลังจาก app = Flask(__name__) และ register blueprint แล้ว ใส่:
+from app.trading.position_watcher import start_position_watcher
+
+if (os.getenv("ENABLE_WATCHER", "1").strip() == "1"):
+    start_position_watcher()
 
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="th">
@@ -3561,7 +3566,8 @@ if __name__ == "__main__":
         print("Manual Trend Watch Mode...")
         run_trend_watch_job(min_conf=65.0)
     else:
-        app.run(host="0.0.0.0", port=8080, debug=True)
+        debug = (os.getenv("FLASK_DEBUG") or "0").strip() == "1"
+        app.run(host="0.0.0.0", port=8080, debug=debug)
 ===== app/performance/__init__.py =====
 
 ===== app/performance/dashboard.py =====
@@ -3958,16 +3964,16 @@ def performance_dashboard():
     return html
 ===== app/performance/metrics.py =====
 # app/performance/metrics.py
-# อ่านข้อมูลจาก DB เดิม ไม่แตะไฟล์ใด
 from __future__ import annotations
 
+import os
 import json
 import math
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional
 
-DB_PATH = Path("positions.db")
+DB_PATH = Path(os.getenv("ELLIOTT_DB", "/var/lib/elliott/positions.db"))
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -3994,28 +4000,57 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
     closed = [p for p in positions if p.get("status") == "CLOSED"]
     active = [p for p in positions if p.get("status") == "ACTIVE"]
 
-    total_closed = len(closed)
-    wins = [p for p in closed if p.get("closed_reason") == "TP3"]
-    losses = [p for p in closed if p.get("closed_reason") == "SL"]
-
-    win_count = len(wins)
-    loss_count = len(losses)
-    winrate = round((win_count / total_closed) * 100, 2) if total_closed > 0 else 0.0
-
-    # R-multiple per trade (TP3 = +RR, SL = -1R)
+    # R-multiple per trade (Partial Exit 30/30/40, TP3=4R)
     r_multiples: List[float] = []
+
     for p in closed:
         entry = float(p.get("entry", 0) or 0)
         sl = float(p.get("sl", 0) or 0)
-        tp3 = float(p.get("tp3", 0) or 0)
+
         risk = abs(entry - sl)
         if risk <= 0:
             continue
-        if p.get("closed_reason") == "TP3":
-            rr = abs(tp3 - entry) / risk
-            r_multiples.append(rr)
-        elif p.get("closed_reason") == "SL":
-            r_multiples.append(-1.0)
+
+        # weights
+        w1, w2, w3 = 0.3, 0.3, 0.4
+
+        r = 0.0
+
+        # TP1
+        if p.get("tp1_hit"):
+            r += w1 * 1.0
+
+        # TP2
+        if p.get("tp2_hit"):
+            r += w2 * 2.0
+
+        # TP3
+        if p.get("tp3_hit"):
+            r += w3 * 4.0
+
+        # Remaining position hits SL
+        if p.get("sl_hit"):
+            remaining = 1.0
+            if p.get("tp1_hit"):
+                remaining -= w1
+            if p.get("tp2_hit"):
+                remaining -= w2
+            if p.get("tp3_hit"):
+                remaining -= w3
+
+            r += remaining * (-1.0)
+
+        r_multiples.append(round(r, 3))
+
+    total_closed = len(closed)
+    total_scored = len(r_multiples)
+
+    wins = [r for r in r_multiples if r > 0]
+    losses = [r for r in r_multiples if r < 0]
+
+    win_count = len(wins)
+    loss_count = len(losses)
+    winrate = round((win_count / total_scored) * 100, 2) if total_scored > 0 else 0.0
 
     # Equity curve
     equity = 0.0
@@ -4045,7 +4080,7 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
     gross_loss = abs(sum(r for r in r_multiples if r < 0))
     profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 0.0
 
-    # Avg RR
+    # Avg R (ชื่อเดิม avg_rr)
     avg_rr = round(sum(r_multiples) / len(r_multiples), 2) if r_multiples else 0.0
 
     # Per symbol breakdown
@@ -4066,6 +4101,7 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
 
     return {
         "total_closed": total_closed,
+        "total_scored": total_scored,
         "active": len(active),
         "win_count": win_count,
         "loss_count": loss_count,
@@ -4983,21 +5019,24 @@ TP3: {_fmt_price(tp3) if tp3 else '-'}
 ===== app/state/__init__.py =====
 
 ===== app/state/position_manager.py =====
+import os
 import json
 import logging
 import sqlite3
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 logger = logging.getLogger(__name__)
 
-# ✅ FIX: ใช้ SQLite แทน JSON file
-DB_PATH = Path("positions.db")
+# ✅ ใช้ DB เดียวกับ performance (กำหนดผ่าน ENV ได้)
+DB_PATH = Path(os.getenv("ELLIOTT_DB", "/var/lib/elliott/positions.db"))
 
 
 def _get_conn() -> sqlite3.Connection:
+    # ensure directory exists
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
@@ -5028,7 +5067,9 @@ class Position:
     tp1: float
     tp2: float
     tp3: float
+    qty: float
     status: str
+    remaining_qty: float = 0.0
     tp1_hit: bool = False
     tp2_hit: bool = False
     tp3_hit: bool = False
@@ -5087,6 +5128,22 @@ def get_active(symbol: str, timeframe: str) -> Optional[Position]:
         return None
 
 
+def list_active_positions(timeframe: str) -> List[Position]:
+    """ดึง ACTIVE ทั้งหมดจาก DB (กรองด้วย timeframe)"""
+    out: List[Position] = []
+    try:
+        with _get_conn() as conn:
+            rows = conn.execute("SELECT data FROM positions").fetchall()
+        for r in rows:
+            raw = json.loads(r["data"])
+            if (raw.get("status") == "ACTIVE") and (str(raw.get("timeframe")).upper() == str(timeframe).upper()):
+                out.append(Position(**raw))
+        return out
+    except Exception as e:
+        logger.error(f"list_active_positions error: {e}")
+        return []
+
+
 def lock_new_position(
     symbol: str, timeframe: str, direction: str, trade_plan: Dict
 ) -> bool:
@@ -5095,6 +5152,8 @@ def lock_new_position(
         raw = _load_position(k)
         if raw and raw.get("status") == "ACTIVE":
             return False
+
+        qty = float(trade_plan.get("qty") or 0.0)
 
         pos = Position(
             symbol=symbol,
@@ -5105,6 +5164,8 @@ def lock_new_position(
             tp1=float(trade_plan["tp1"]),
             tp2=float(trade_plan["tp2"]),
             tp3=float(trade_plan["tp3"]),
+            qty=qty,
+            remaining_qty=qty,
             status="ACTIVE",
             opened_at=_now_iso(),
         )
@@ -5430,7 +5491,44 @@ def cancel_order(symbol: str, order_id: int) -> dict:
     r.raise_for_status()
     return r.json()
 
+# เพิ่มท้ายไฟล์ app/trading/binance_trader.py
 
+def get_mark_price(symbol: str) -> float:
+    r = requests.get(f"{FUTURES_URL}/fapi/v1/premiumIndex", params={"symbol": symbol}, timeout=10)
+    r.raise_for_status()
+    j = r.json()
+    return float(j.get("markPrice") or 0)
+
+def close_market_reduce_only(symbol: str, side: str, quantity: float, position_side: str | None = None) -> dict:
+    """
+    ปิดบางส่วน/ทั้งหมดด้วย MARKET + reduceOnly
+    side = "BUY"/"SELL" (ฝั่งปิด)
+    position_side = "LONG"/"SHORT" (ใช้เฉพาะ hedge mode)
+    """
+    api_key, secret = _get_keys()
+    quantity = adjust_quantity(symbol, quantity)
+    if quantity <= 0:
+        raise ValueError(f"quantity too small after step adjust: {symbol}")
+
+    params: dict[str, Any] = {
+        "symbol": symbol,
+        "side": side,
+        "type": "MARKET",
+        "quantity": quantity,
+        "reduceOnly": "true",
+        "timestamp": int(time.time() * 1000),
+    }
+    if IS_HEDGE_MODE:
+        if position_side not in ("LONG", "SHORT"):
+            raise ValueError(f"invalid position_side: {position_side}")
+        params["positionSide"] = position_side
+
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
+    print(f"REDUCE response: {r.text}", flush=True)
+    r.raise_for_status()
+    return r.json()
 ===== app/trading/position_sizer.py =====
 # app/trading/position_sizer.py
 
@@ -5451,6 +5549,129 @@ def calculate_quantity(balance: float, risk_pct: float, entry: float, sl: float)
 
     qty = risk_amount / sl_distance
     return round(qty, 6)
+===== app/trading/position_watcher.py =====
+# app/trading/position_watcher.py
+import os
+import time
+import threading
+
+from app.config.wave_settings import TIMEFRAME
+from app.state.position_manager import list_active_positions, _key, _save_position, asdict  # type: ignore
+from app.trading.binance_trader import (
+    get_open_positions,
+    get_mark_price,
+    close_market_reduce_only,
+    adjust_quantity,
+    IS_HEDGE_MODE,
+)
+
+_T = None
+
+W1 = float(os.getenv("TP1_WEIGHT", "0.30"))
+W2 = float(os.getenv("TP2_WEIGHT", "0.30"))
+W3 = float(os.getenv("TP3_WEIGHT", "0.40"))
+WATCH_SEC = float(os.getenv("WATCH_INTERVAL_SEC", "5"))
+
+def _find_live_position(symbol: str):
+    for p in get_open_positions():
+        if p.get("symbol") == symbol and float(p.get("positionAmt", 0)) != 0:
+            return p
+    return None
+
+def _close_qty(symbol: str, close_side: str, qty: float, pos_side: str | None):
+    qty = adjust_quantity(symbol, qty)
+    if qty <= 0:
+        return False
+    close_market_reduce_only(symbol, close_side, qty, position_side=pos_side)
+    return True
+
+def _loop():
+    while True:
+        try:
+            actives = list_active_positions(TIMEFRAME)
+            for pos in actives:
+                sym = pos.symbol
+
+                live = _find_live_position(sym)
+                if not live:
+                    # ถ้าใน Binance ไม่มีแล้ว → ปิดใน DB
+                    pos.status = "CLOSED"
+                    pos.closed_reason = pos.closed_reason or "EXTERNAL_CLOSE"
+                    pos.closed_at = pos.closed_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    _save_position(_key(sym, pos.timeframe), asdict(pos))
+                    continue
+
+                amt = float(live.get("positionAmt") or 0)
+                cur_qty = abs(amt)
+                if cur_qty <= 0:
+                    continue
+
+                direction = (pos.direction or "").upper()
+                mark = float(live.get("markPrice") or 0) or get_mark_price(sym)
+
+                # ฝั่งปิด + positionSide
+                if amt > 0:
+                    close_side = "SELL"
+                    pos_side = "LONG"
+                else:
+                    close_side = "BUY"
+                    pos_side = "SHORT"
+
+                if not IS_HEDGE_MODE:
+                    pos_side = None
+
+                # SL ก่อน
+                sl_hit = (mark <= pos.sl) if direction == "LONG" else (mark >= pos.sl)
+                if (not pos.sl_hit) and sl_hit:
+                    if _close_qty(sym, close_side, cur_qty, pos_side):
+                        pos.sl_hit = True
+                        pos.status = "CLOSED"
+                        pos.closed_reason = "SL"
+                        pos.closed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                        pos.remaining_qty = 0.0
+                        _save_position(_key(sym, pos.timeframe), asdict(pos))
+                    continue
+
+                # TP1
+                tp1_hit = (mark >= pos.tp1) if direction == "LONG" else (mark <= pos.tp1)
+                if (not pos.tp1_hit) and tp1_hit:
+                    q = min(cur_qty, pos.qty * W1)
+                    if _close_qty(sym, close_side, q, pos_side):
+                        pos.tp1_hit = True
+                        pos.remaining_qty = max(0.0, pos.remaining_qty - q)
+                        _save_position(_key(sym, pos.timeframe), asdict(pos))
+
+                # TP2
+                tp2_hit = (mark >= pos.tp2) if direction == "LONG" else (mark <= pos.tp2)
+                if (not pos.tp2_hit) and tp2_hit:
+                    q = min(cur_qty, pos.qty * W2)
+                    if _close_qty(sym, close_side, q, pos_side):
+                        pos.tp2_hit = True
+                        pos.remaining_qty = max(0.0, pos.remaining_qty - q)
+                        _save_position(_key(sym, pos.timeframe), asdict(pos))
+
+                # TP3 (ปิดที่เหลือทั้งหมด)
+                tp3_hit = (mark >= pos.tp3) if direction == "LONG" else (mark <= pos.tp3)
+                if (not pos.tp3_hit) and tp3_hit:
+                    if _close_qty(sym, close_side, cur_qty, pos_side):
+                        pos.tp3_hit = True
+                        pos.status = "CLOSED"
+                        pos.closed_reason = "TP3"
+                        pos.closed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                        pos.remaining_qty = 0.0
+                        _save_position(_key(sym, pos.timeframe), asdict(pos))
+
+        except Exception:
+            pass
+
+        time.sleep(WATCH_SEC)
+
+def start_position_watcher():
+    global _T
+    if _T and _T.is_alive():
+        return
+    _T = threading.Thread(target=_loop, daemon=True)
+    _T.start()
 ===== app/trading/trade_executor.py =====
 # app/trading/trade_executor.py
 
@@ -5680,7 +5901,8 @@ def execute_signal(signal: dict) -> bool:
             "sl":    sl_final,
             "tp1":   float(plan["tp1"]),
             "tp2":   float(plan["tp2"]),
-            "tp3":   float(tp_final),  # ✅ tp3 = TP ที่ยิงจริง
+            "tp3":   float(tp_final),
+            "qty":   float(quantity),   # ✅ เพิ่ม
             "rr":    float(plan["rr"]),
             "risk":  float(plan["risk"]),
         },

@@ -91,6 +91,21 @@ def _save_position(key: str, data: Dict) -> None:
     except Exception as e:
         logger.error(f"_save_position {key} error: {e}")
 
+def _normalize_raw(raw: dict) -> dict:
+    # กัน DB เก่าที่ไม่มี field ใหม่ → ไม่ให้ Position(**raw) พัง
+    raw.setdefault("qty", 0.0)
+    raw.setdefault("remaining_qty", float(raw.get("qty") or 0.0))
+
+    raw.setdefault("tp1_hit", False)
+    raw.setdefault("tp2_hit", False)
+    raw.setdefault("tp3_hit", False)
+    raw.setdefault("sl_hit", False)
+
+    raw.setdefault("opened_at", "")
+    raw.setdefault("closed_at", "")
+    raw.setdefault("closed_reason", "")
+
+    return raw
 
 def get_active(symbol: str, timeframe: str) -> Optional[Position]:
     try:
@@ -98,17 +113,19 @@ def get_active(symbol: str, timeframe: str) -> Optional[Position]:
         raw = _load_position(k)
         if not raw:
             return None
+
+        raw = _normalize_raw(raw)
         pos = Position(**raw)
+
         if pos.status == "ACTIVE":
             return pos
         return None
+
     except Exception as e:
         logger.error(f"get_active {symbol} error: {e}")
         return None
 
-
 def list_active_positions(timeframe: str) -> List[Position]:
-    """ดึง ACTIVE ทั้งหมดจาก DB (กรองด้วย timeframe)"""
     out: List[Position] = []
     try:
         with _get_conn() as conn:
@@ -116,12 +133,13 @@ def list_active_positions(timeframe: str) -> List[Position]:
         for r in rows:
             raw = json.loads(r["data"])
             if (raw.get("status") == "ACTIVE") and (str(raw.get("timeframe")).upper() == str(timeframe).upper()):
+                raw.setdefault("qty", 0.0)
+                raw.setdefault("remaining_qty", 0.0)
                 out.append(Position(**raw))
         return out
     except Exception as e:
         logger.error(f"list_active_positions error: {e}")
         return []
-
 
 def lock_new_position(
     symbol: str, timeframe: str, direction: str, trade_plan: Dict

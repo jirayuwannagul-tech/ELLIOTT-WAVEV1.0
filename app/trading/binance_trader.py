@@ -281,3 +281,40 @@ def close_market_reduce_only(symbol: str, side: str, quantity: float, position_s
     print(f"REDUCE response: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
+
+def get_last_filled_order(symbol: str) -> dict | None:
+    """
+    ดึง order ที่ FILLED ล่าสุดของ symbol
+    กรองเฉพาะ STOP_MARKET และ TAKE_PROFIT_MARKET
+    ใช้สำหรับ detect ว่า SL หรือ TP ชนจาก algoOrder
+    """
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {
+        "symbol": symbol,
+        "limit": 20,
+        "timestamp": int(time.time() * 1000),
+    }
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+
+    r = requests.get(
+        f"{FUTURES_URL}/fapi/v1/allOrders",
+        params=params,
+        headers=headers,
+        timeout=10,
+    )
+    r.raise_for_status()
+
+    orders = r.json()
+    candidates = [
+        o for o in orders
+        if o.get("status") == "FILLED"
+        and o.get("type") in ("STOP_MARKET", "TAKE_PROFIT_MARKET")
+    ]
+
+    if not candidates:
+        return None
+
+    # คืน order ที่ updateTime ล่าสุด
+    candidates.sort(key=lambda o: int(o.get("updateTime", 0)), reverse=True)
+    return candidates[0]
