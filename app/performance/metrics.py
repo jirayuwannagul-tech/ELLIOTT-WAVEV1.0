@@ -35,35 +35,31 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
     closed = [p for p in positions if p.get("status") == "CLOSED"]
     active = [p for p in positions if p.get("status") == "ACTIVE"]
 
-    # R-multiple per trade (Partial Exit 30/30/40, TP3=4R)
+    RISK_PCT = 0.005
+
     r_multiples: List[float] = []
+    pnl_usdt: List[float] = []
 
     for p in closed:
         entry = float(p.get("entry", 0) or 0)
         sl = float(p.get("sl", 0) or 0)
+        balance_at_open = float(p.get("balance_at_open", 0) or 0)
 
         risk = abs(entry - sl)
         if risk <= 0:
             continue
 
-        # weights
         w1, w2, w3 = 0.3, 0.3, 0.4
 
         r = 0.0
 
-        # TP1
         if p.get("tp1_hit"):
             r += w1 * 1.0
-
-        # TP2
         if p.get("tp2_hit"):
             r += w2 * 2.0
-
-        # TP3
         if p.get("tp3_hit"):
             r += w3 * 4.0
 
-        # Remaining position hits SL
         if p.get("sl_hit"):
             remaining = 1.0
             if p.get("tp1_hit"):
@@ -72,10 +68,15 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
                 remaining -= w2
             if p.get("tp3_hit"):
                 remaining -= w3
-
             r += remaining * (-1.0)
 
         r_multiples.append(round(r, 3))
+
+        # คำนวณ USDT PnL
+        if balance_at_open > 0:
+            pnl_usdt.append(round(balance_at_open * RISK_PCT * r, 4))
+        else:
+            pnl_usdt.append(0.0)
 
     total_closed = len(closed)
     total_scored = len(r_multiples)
@@ -87,21 +88,24 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
     loss_count = len(losses)
     winrate = round((win_count / total_scored) * 100, 2) if total_scored > 0 else 0.0
 
-    # Equity curve
     equity = 0.0
     peak = 0.0
     max_dd = 0.0
     equity_curve: List[float] = []
-    for r in r_multiples:
+    equity_curve_usdt: List[float] = []
+    total_pnl_usdt = 0.0
+
+    for r, pnl in zip(r_multiples, pnl_usdt):
         equity += r
+        total_pnl_usdt += pnl
         peak = max(peak, equity)
         dd = peak - equity
         max_dd = max(max_dd, dd)
         equity_curve.append(round(equity, 3))
+        equity_curve_usdt.append(round(total_pnl_usdt, 4))
 
     total_r = round(equity, 3)
 
-    # Sharpe Ratio (annualized, assume 1 trade/day avg)
     sharpe = 0.0
     if len(r_multiples) >= 2:
         mean_r = sum(r_multiples) / len(r_multiples)
@@ -110,15 +114,12 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
         if std_r > 0:
             sharpe = round((mean_r / std_r) * math.sqrt(252), 2)
 
-    # Profit factor
     gross_profit = sum(r for r in r_multiples if r > 0)
     gross_loss = abs(sum(r for r in r_multiples if r < 0))
     profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 0.0
 
-    # Avg R (ชื่อเดิม avg_rr)
     avg_rr = round(sum(r_multiples) / len(r_multiples), 2) if r_multiples else 0.0
 
-    # Per symbol breakdown
     symbol_stats: Dict[str, Dict] = {}
     for p in closed:
         sym = p.get("symbol", "?")
@@ -142,11 +143,13 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
         "loss_count": loss_count,
         "winrate": winrate,
         "total_r": total_r,
+        "total_pnl_usdt": round(total_pnl_usdt, 4),
         "max_drawdown_r": round(max_dd, 3),
         "sharpe_ratio": sharpe,
         "profit_factor": profit_factor,
         "avg_rr": avg_rr,
         "equity_curve": equity_curve,
+        "equity_curve_usdt": equity_curve_usdt,
         "symbol_stats": symbol_stats,
         "closed_positions": closed,
         "active_positions": active,
