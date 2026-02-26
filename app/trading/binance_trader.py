@@ -243,3 +243,41 @@ def cancel_order(symbol: str, order_id: int) -> dict:
     r.raise_for_status()
     return r.json()
 
+# เพิ่มท้ายไฟล์ app/trading/binance_trader.py
+
+def get_mark_price(symbol: str) -> float:
+    r = requests.get(f"{FUTURES_URL}/fapi/v1/premiumIndex", params={"symbol": symbol}, timeout=10)
+    r.raise_for_status()
+    j = r.json()
+    return float(j.get("markPrice") or 0)
+
+def close_market_reduce_only(symbol: str, side: str, quantity: float, position_side: str | None = None) -> dict:
+    """
+    ปิดบางส่วน/ทั้งหมดด้วย MARKET + reduceOnly
+    side = "BUY"/"SELL" (ฝั่งปิด)
+    position_side = "LONG"/"SHORT" (ใช้เฉพาะ hedge mode)
+    """
+    api_key, secret = _get_keys()
+    quantity = adjust_quantity(symbol, quantity)
+    if quantity <= 0:
+        raise ValueError(f"quantity too small after step adjust: {symbol}")
+
+    params: dict[str, Any] = {
+        "symbol": symbol,
+        "side": side,
+        "type": "MARKET",
+        "quantity": quantity,
+        "reduceOnly": "true",
+        "timestamp": int(time.time() * 1000),
+    }
+    if IS_HEDGE_MODE:
+        if position_side not in ("LONG", "SHORT"):
+            raise ValueError(f"invalid position_side: {position_side}")
+        params["positionSide"] = position_side
+
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
+    print(f"REDUCE response: {r.text}", flush=True)
+    r.raise_for_status()
+    return r.json()

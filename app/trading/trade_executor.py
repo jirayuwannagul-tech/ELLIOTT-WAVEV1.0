@@ -226,7 +226,8 @@ def execute_signal(signal: dict) -> bool:
             "sl":    sl_final,
             "tp1":   float(plan["tp1"]),
             "tp2":   float(plan["tp2"]),
-            "tp3":   float(tp_final),  # ✅ tp3 = TP ที่ยิงจริง
+            "tp3":   float(tp_final),
+            "qty":   float(quantity),   # ✅ เพิ่ม
             "rr":    float(plan["rr"]),
             "risk":  float(plan["risk"]),
         },

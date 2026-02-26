@@ -36,6 +36,11 @@ app = Flask(__name__)
 
 from app.performance.dashboard import perf_bp
 app.register_blueprint(perf_bp)
+# หลังจาก app = Flask(__name__) และ register blueprint แล้ว ใส่:
+from app.trading.position_watcher import start_position_watcher
+
+if (os.getenv("ENABLE_WATCHER", "1").strip() == "1"):
+    start_position_watcher()
 
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="th">

@@ -1,18 +1,21 @@
+import os
 import json
 import logging
 import sqlite3
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 logger = logging.getLogger(__name__)
 
-# ✅ FIX: ใช้ SQLite แทน JSON file
-DB_PATH = Path("positions.db")
+# ✅ ใช้ DB เดียวกับ performance (กำหนดผ่าน ENV ได้)
+DB_PATH = Path(os.getenv("ELLIOTT_DB", "/var/lib/elliott/positions.db"))
 
 
 def _get_conn() -> sqlite3.Connection:
+    # ensure directory exists
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
@@ -43,7 +46,9 @@ class Position:
     tp1: float
     tp2: float
     tp3: float
+    qty: float
     status: str
+    remaining_qty: float = 0.0
     tp1_hit: bool = False
     tp2_hit: bool = False
     tp3_hit: bool = False
@@ -102,6 +107,22 @@ def get_active(symbol: str, timeframe: str) -> Optional[Position]:
         return None
 
 
+def list_active_positions(timeframe: str) -> List[Position]:
+    """ดึง ACTIVE ทั้งหมดจาก DB (กรองด้วย timeframe)"""
+    out: List[Position] = []
+    try:
+        with _get_conn() as conn:
+            rows = conn.execute("SELECT data FROM positions").fetchall()
+        for r in rows:
+            raw = json.loads(r["data"])
+            if (raw.get("status") == "ACTIVE") and (str(raw.get("timeframe")).upper() == str(timeframe).upper()):
+                out.append(Position(**raw))
+        return out
+    except Exception as e:
+        logger.error(f"list_active_positions error: {e}")
+        return []
+
+
 def lock_new_position(
     symbol: str, timeframe: str, direction: str, trade_plan: Dict
 ) -> bool:
@@ -110,6 +131,8 @@ def lock_new_position(
         raw = _load_position(k)
         if raw and raw.get("status") == "ACTIVE":
             return False
+
+        qty = float(trade_plan.get("qty") or 0.0)
 
         pos = Position(
             symbol=symbol,
@@ -120,6 +143,8 @@ def lock_new_position(
             tp1=float(trade_plan["tp1"]),
             tp2=float(trade_plan["tp2"]),
             tp3=float(trade_plan["tp3"]),
+            qty=qty,
+            remaining_qty=qty,
             status="ACTIVE",
             opened_at=_now_iso(),
         )
