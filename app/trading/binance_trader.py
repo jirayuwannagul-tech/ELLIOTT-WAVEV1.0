@@ -335,8 +335,9 @@ def get_last_filled_order(symbol: str) -> dict | None:
 
     candidates = [
         o for o in orders
-        if o.get("status") in ("FILLED", "EXECUTED")
+        if o.get("status") in ("FILLED", "EXECUTED", "CANCELED")
         and o.get("type") in ("STOP_MARKET", "TAKE_PROFIT_MARKET")
+        and float(o.get("stopPrice") or 0) > 0
     ]
 
     if not candidates:

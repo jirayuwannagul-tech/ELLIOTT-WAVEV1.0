@@ -42,24 +42,35 @@ def _loop():
 
                 live = _find_live_position(sym)
                 if not live:
-                    try:
-                        from app.trading.binance_trader import get_last_filled_order
-                        last_order = get_last_filled_order(sym)
-                    except Exception:
-                        last_order = None
-
                     now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-                    if last_order:
-                        order_type = last_order.get("type", "")
-                        if order_type == "STOP_MARKET":
-                            pos.sl_hit = True
-                            pos.closed_reason = "SL"
-                        elif order_type == "TAKE_PROFIT_MARKET":
-                            pos.tp3_hit = True
-                            pos.closed_reason = "TP3"
-                        else:
-                            pos.closed_reason = "EXTERNAL_CLOSE"
+                    # ดึง mark price ล่าสุดเพื่อเทียบ
+                    try:
+                        mark = get_mark_price(sym)
+                    except Exception:
+                        mark = 0.0
+
+                    # เทียบราคากับ SL/TP ใน DB
+                    direction = (pos.direction or "").upper()
+                    if mark > 0:
+                        if direction == "LONG":
+                            if mark <= pos.sl:
+                                pos.sl_hit = True
+                                pos.closed_reason = "SL"
+                            elif mark >= pos.tp3:
+                                pos.tp3_hit = True
+                                pos.closed_reason = "TP3"
+                            else:
+                                pos.closed_reason = "EXTERNAL_CLOSE"
+                        else:  # SHORT
+                            if mark >= pos.sl:
+                                pos.sl_hit = True
+                                pos.closed_reason = "SL"
+                            elif mark <= pos.tp3:
+                                pos.tp3_hit = True
+                                pos.closed_reason = "TP3"
+                            else:
+                                pos.closed_reason = "EXTERNAL_CLOSE"
                     else:
                         pos.closed_reason = pos.closed_reason or "EXTERNAL_CLOSE"
 
