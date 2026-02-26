@@ -25,7 +25,6 @@ from app.config.wave_settings import TIMEFRAME
 RISK_PCT = 0.005  # เสี่ยง 0.5% ต่อไม้ (ลด DD จาก ~106% เหลือ ~26.7%)
 MIN_RR_AFTER_FILL = 2.0  # RR ขั้นต่ำหลัง fill จริง (align with system MIN_RR)
 
-
 def _get_actual_entry(order: dict, entry_est: float) -> float:
     """
     ดึง fill price จริงจาก order response
@@ -136,6 +135,13 @@ def execute_signal(signal: dict) -> bool:
     # ── เตรียม leverage / margin ──
     set_margin_type(symbol, "ISOLATED")
     set_leverage(symbol, LEVERAGE)
+
+    # ── กัน quantity เล็กจนปรับแล้วเป็น 0 ──
+    adj_qty = adjust_quantity(symbol, quantity)
+    if adj_qty <= 0:
+        print(f"❌ [{symbol}] skip: qty too small after adjust (raw={quantity})", flush=True)
+        return False
+    quantity = adj_qty
 
     # ── เปิดออเดอร์ ──
     order = open_market_order(symbol, open_side, quantity)
