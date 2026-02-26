@@ -1,11 +1,21 @@
+# Environment
 .env
-__pycache__/
-*.pyc
-venv/
 .env.*
-*.sqlite3.env
+
+# Python cache
 __pycache__/
 *.pyc
-.venv/
+
+# Virtual env
 venv/
+.venv/
+
+# macOS
 .DS_Store
+
+# Database
+*.sqlite3
+
+# Backtest output
+data/
+tmp_trades.csv
