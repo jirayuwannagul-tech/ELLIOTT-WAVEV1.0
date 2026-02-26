@@ -6,6 +6,8 @@ import time
 import hashlib
 import hmac
 import requests
+import logging
+logger = logging.getLogger(__name__)
 from typing import Any
 from pathlib import Path
 from dotenv import load_dotenv
@@ -284,37 +286,61 @@ def close_market_reduce_only(symbol: str, side: str, quantity: float, position_s
 
 def get_last_filled_order(symbol: str) -> dict | None:
     """
-    ดึง order ที่ FILLED ล่าสุดของ symbol
+    ดึง algoOrder ที่ EXECUTED ล่าสุดของ symbol
     กรองเฉพาะ STOP_MARKET และ TAKE_PROFIT_MARKET
-    ใช้สำหรับ detect ว่า SL หรือ TP ชนจาก algoOrder
     """
     api_key, secret = _get_keys()
     params: dict[str, Any] = {
         "symbol": symbol,
-        "limit": 20,
+        "limit": 10,
         "timestamp": int(time.time() * 1000),
     }
     params["signature"] = _sign(params, secret)
     headers = {"X-MBX-APIKEY": api_key}
 
-    r = requests.get(
-        f"{FUTURES_URL}/fapi/v1/allOrders",
-        params=params,
-        headers=headers,
-        timeout=10,
-    )
-    r.raise_for_status()
+    try:
+        r = requests.get(
+            f"{FUTURES_URL}/fapi/v1/algoOrder/historicalOrders",
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        orders = data if isinstance(data, list) else data.get("orders", [])
+    except Exception as e:
+        logger.warning(f"get_last_filled_order algo failed: {e}")
+        orders = []
 
-    orders = r.json()
+    # fallback: ลอง allOrders
+    if not orders:
+        try:
+            params2: dict[str, Any] = {
+                "symbol": symbol,
+                "limit": 20,
+                "timestamp": int(time.time() * 1000),
+            }
+            params2["signature"] = _sign(params2, secret)
+            r2 = requests.get(
+                f"{FUTURES_URL}/fapi/v1/allOrders",
+                params=params2,
+                headers=headers,
+                timeout=10,
+            )
+            r2.raise_for_status()
+            orders = r2.json()
+        except Exception as e:
+            logger.warning(f"get_last_filled_order allOrders failed: {e}")
+            return None
+
     candidates = [
         o for o in orders
-        if o.get("status") == "FILLED"
+        if o.get("status") in ("FILLED", "EXECUTED")
         and o.get("type") in ("STOP_MARKET", "TAKE_PROFIT_MARKET")
     ]
 
     if not candidates:
         return None
 
-    # คืน order ที่ updateTime ล่าสุด
     candidates.sort(key=lambda o: int(o.get("updateTime", 0)), reverse=True)
     return candidates[0]
