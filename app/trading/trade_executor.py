@@ -25,6 +25,12 @@ from app.config.wave_settings import TIMEFRAME
 RISK_PCT = 0.005  # เสี่ยง 0.5% ต่อไม้ (ลด DD จาก ~106% เหลือ ~26.7%)
 MIN_RR_AFTER_FILL = 2.0  # RR ขั้นต่ำหลัง fill จริง (align with system MIN_RR)
 
+# ✅ ตั้ง “ขนาดไม้” รายเหรียญ (หน่วย: USDT notional)
+# ใส่เฉพาะเหรียญที่อยาก fix ไม้ชัด ๆ (ตัวอย่าง BTC ต้อง >= ~65 USDT เพื่อให้ qty >= 0.001)
+FIXED_NOTIONAL_USDT = {
+    "BTCUSDT": 70.0,
+}
+
 def _get_actual_entry(order: dict, entry_est: float) -> float:
     """
     ดึง fill price จริงจาก order response
@@ -116,7 +122,14 @@ def execute_signal(signal: dict) -> bool:
 
     # ── ของจริง ──
     balance  = get_balance()
-    quantity = calculate_quantity(balance, RISK_PCT, entry_est, sl_orig)
+    # ── เลือกวิธีคุมขนาดไม้ ──
+    # 1) ถ้ามี FIXED_NOTIONAL_USDT → ใช้ notional/entry
+    # 2) ไม่งั้น → ใช้ risk-based sizing เดิม
+    fixed_notional = FIXED_NOTIONAL_USDT.get(symbol)
+    if fixed_notional is not None:
+        quantity = fixed_notional / entry_est if entry_est > 0 else 0.0
+    else:
+        quantity = calculate_quantity(balance, RISK_PCT, entry_est, sl_orig)
 
     if quantity <= 0:
         print(f"❌ [{symbol}] quantity = 0")
