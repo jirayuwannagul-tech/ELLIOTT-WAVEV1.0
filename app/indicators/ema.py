@@ -1,12 +1,10 @@
 import pandas as pd
 
-
 def ema(series: pd.Series, length: int) -> pd.Series:
     """
     Exponential Moving Average (EMA)
     """
     return series.ewm(span=length, adjust=False).mean()
-
 
 def add_ema(df: pd.DataFrame, lengths=(50, 200)) -> pd.DataFrame:
     """

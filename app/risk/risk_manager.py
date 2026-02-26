@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
 import logging
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# SL ต้องห่างจาก entry อย่างน้อยกี่ % ถึงจะ valid
+# ถ้าน้อยกว่านี้ = SL ใกล้เกินไป โดนง่ายมาก → reject
+MIN_SL_PCT = 1.0  # 1.0% of entry
 
 
 def calculate_rr(entry: float, sl: float, tp: float) -> float:
@@ -12,6 +17,7 @@ def calculate_rr(entry: float, sl: float, tp: float) -> float:
     if risk == 0:
         return 0.0
     return reward / risk
+
 
 def _safe_fib_extension(
     p0: float,
@@ -37,7 +43,6 @@ def _safe_fib_extension(
         t2 = anchor - base_len * 1.618
         t3 = anchor - base_len * 2.0
 
-    # ✅ invalidate แทน cap
     if t1 <= 0 or t2 <= 0 or t3 <= 0:
         logger.warning(
             f"fib_extension: invalid targets (t1={t1:.6f}, t2={t2:.6f}, t3={t3:.6f}) "
@@ -46,6 +51,59 @@ def _safe_fib_extension(
         return None
 
     return {"1.0": t1, "1.618": t2, "2.0": t3}
+
+
+def _check_sl_distance(entry: float, sl: float, direction: str) -> Optional[str]:
+    """
+    ตรวจว่า SL ห่างจาก entry พอไหม
+    ถ้าน้อยกว่า MIN_SL_PCT → คืน reason string
+    ถ้าผ่าน → คืน None
+    """
+    if entry <= 0:
+        return "entry <= 0"
+    sl_pct = abs(entry - sl) / entry * 100
+    if sl_pct < MIN_SL_PCT:
+        return f"SL ใกล้เกินไป ({sl_pct:.2f}% < {MIN_SL_PCT}%)"
+    return None
+
+
+def _cap_tp3_by_max_r(entry: float, sl: float, tp3: float, direction: str) -> float:
+    """
+    จำกัด TP3 ไม่ให้เกิน MAX_TP_R (หน่วยเป็น R)
+    เปิดใช้ด้วย env: MAX_TP_R=3 (หรือ 2.5, 4 ฯลฯ)
+
+    หมายเหตุ:
+    - ไม่แตะ tp1/tp2
+    - ใช้ risk จาก |entry-sl| หลังปรับ sr แล้วเท่านั้น
+    """
+    try:
+        s = (os.getenv("MAX_TP_R", "") or "").strip()
+        max_r = float(s) if s else 0.0
+    except Exception:
+        max_r = 0.0
+
+    if not max_r or max_r <= 0:
+        return float(tp3)
+
+    risk = abs(float(entry) - float(sl))
+    if risk <= 0:
+        return float(tp3)
+
+    d = (direction or "").upper()
+    if d == "LONG":
+        r_tp3 = (float(tp3) - float(entry)) / risk
+        if r_tp3 > max_r:
+            return float(entry) + risk * max_r
+        return float(tp3)
+
+    if d == "SHORT":
+        r_tp3 = (float(entry) - float(tp3)) / risk
+        if r_tp3 > max_r:
+            return float(entry) - risk * max_r
+        return float(tp3)
+
+    return float(tp3)
+
 
 def build_trade_plan(
     scenario: Dict,
@@ -97,16 +155,25 @@ def build_trade_plan(
             trade["reason"] = "SIDEWAY: direction ไม่ถูกต้อง"
             return trade
 
-        rr = calculate_rr(entry, sl, tp2)
+        # SL distance check
+        sl_err = _check_sl_distance(entry, sl, direction)
+        if sl_err:
+            trade["reason"] = f"SIDEWAY: {sl_err}"
+            return trade
+
+        # ✅ APPLY CAP (ให้ MAX_TP_R มีผลจริง)
+        tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
+
+        rr = calculate_rr(entry, sl, tp1)
         if rr >= min_rr:
             trade.update({
                 "entry": entry, "sl": sl,
                 "tp1": tp1, "tp2": tp2, "tp3": tp3,
                 "valid": True,
-                "reason": f"RR={round(rr, 2)} ≥ {min_rr}",
+                "reason": f"RR(TP1)={round(rr, 2)} ≥ {min_rr}",
             })
         else:
-            trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
+            trade["reason"] = f"RR(TP1) ต่ำ ({round(rr, 2)})"
         return trade
 
     # =========================
@@ -131,14 +198,19 @@ def build_trade_plan(
             entry = float(current_price)
             sl = h2
 
-            # FIX: ส่ง direction="SHORT" + a_len โดยตรง
-            # ไม่พึ่ง signed math (h0, l1 อาจผิด type ในกรณี fallback)
+            # SL distance check
+            sl_err = _check_sl_distance(entry, sl, direction)
+            if sl_err:
+                trade["reason"] = f"ABC_DOWN: {sl_err}"
+                return trade
+
             fib = _safe_fib_extension(h0, l1, entry, "SHORT", a_len)
             if fib is None:
                 trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
                 return trade
             tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
+            # sr adjustment
             if sr:
                 resist = (sr.get("resist") or {}).get("level")
                 if resist and float(resist) < sl:
@@ -157,28 +229,37 @@ def build_trade_plan(
             entry = float(current_price)
             sl = l2
 
-            # FIX: ส่ง direction="LONG" + a_len โดยตรง
+            # SL distance check — ตรวจก่อน sr adjustment
+            sl_err = _check_sl_distance(entry, sl, direction)
+            if sl_err:
+                trade["reason"] = f"ABC_UP: {sl_err}"
+                return trade
+
             fib = _safe_fib_extension(l0, h1, entry, "LONG", a_len)
             if fib is None:
                 trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
                 return trade
             tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
+            # sr adjustment
             if sr:
                 support = (sr.get("support") or {}).get("level")
                 if support and float(support) > sl:
                     sl = float(support)
 
-        rr = calculate_rr(entry, sl, tp2)
+        # ✅ APPLY CAP หลัง sr adjustment เสร็จ (สำคัญ)
+        tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
+
+        rr = calculate_rr(entry, sl, tp1)
         if rr >= min_rr:
             trade.update({
                 "entry": entry, "sl": sl,
                 "tp1": tp1, "tp2": tp2, "tp3": tp3,
                 "valid": True,
-                "reason": f"RR={round(rr, 2)} ≥ {min_rr} (fib+sr)",
+                "reason": f"RR(TP1)={round(rr, 2)} ≥ {min_rr} (fib+sr)",
             })
         else:
-            trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
+            trade["reason"] = f"RR(TP1) ต่ำ ({round(rr, 2)})"
         return trade
 
     # =========================
@@ -196,13 +277,19 @@ def build_trade_plan(
     p1 = float(pivots[1]["price"])
     base_len = abs(p1 - p0)
 
-    # FIX: ส่ง direction + base_len โดยตรง (ไม่พึ่ง signed math)
+    # SL distance check
+    sl_err = _check_sl_distance(entry, sl, direction)
+    if sl_err:
+        trade["reason"] = f"IMPULSE: {sl_err}"
+        return trade
+
     fib = _safe_fib_extension(p0, p1, entry, direction, base_len)
     if fib is None:
         trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
         return trade
     tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
+    # sr adjustment
     if direction == "LONG":
         if sr:
             support = (sr.get("support") or {}).get("level")
@@ -217,16 +304,19 @@ def build_trade_plan(
         trade["reason"] = "IMPULSE: direction ไม่ถูกต้อง"
         return trade
 
-    rr = calculate_rr(entry, sl, tp2)
+    # ✅ APPLY CAP หลัง sr adjustment เสร็จ (สำคัญ)
+    tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
+
+    rr = calculate_rr(entry, sl, tp1)
     if rr >= min_rr:
         trade.update({
             "entry": entry, "sl": sl,
             "tp1": tp1, "tp2": tp2, "tp3": tp3,
             "valid": True,
-            "reason": f"RR={round(rr, 2)} ≥ {min_rr} (fib+sr)",
+            "reason": f"RR(TP1)={round(rr, 2)} ≥ {min_rr} (fib+sr)",
         })
     else:
-        trade["reason"] = f"RR ต่ำ ({round(rr, 2)})"
+        trade["reason"] = f"RR(TP1) ต่ำ ({round(rr, 2)})"
 
     return trade
 
@@ -238,12 +328,6 @@ def recalculate_from_fill(
     original_tp_rr: float,
     min_rr: float = 1.6,
 ) -> Dict:
-    """
-    คำนวณ SL/TP ใหม่จาก fill price จริง
-    - SL คงที่ (technical level เดิม)
-    - TP recalculate จาก actual_entry × ratio เดิม
-    - validate RR >= min_rr
-    """
     direction = direction.upper()
     risk = abs(actual_entry - original_sl)
 
@@ -259,7 +343,7 @@ def recalculate_from_fill(
         tp2 = actual_entry - risk * original_tp_rr
         tp3 = actual_entry - risk * 2.0
 
-    rr = calculate_rr(actual_entry, original_sl, tp2)
+    rr = calculate_rr(actual_entry, original_sl, tp1)
 
     if rr < min_rr:
         return {

@@ -171,7 +171,6 @@ def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
 
     return base
 
-
 def analyze_symbol(symbol: str) -> Optional[Dict]:
     df = fetch_ohlcv(symbol, interval=TIMEFRAME, limit=BARS)
     df = drop_unclosed_candle(df)
@@ -218,6 +217,13 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     rsi14 = float(df["rsi14"].iloc[-1])
     is_vol_spike = bool(volume_spike(df, length=20, multiplier=1.5))
 
+    # Trend Structure Confirm (สำหรับโหมด TREND)
+    ema50 = float(df["ema50"].iloc[-1])
+    ema200 = float(df["ema200"].iloc[-1])
+    ema200_prev = float(df["ema200"].iloc[-2]) if len(df) >= 2 else ema200
+    trend_ok_long  = (ema50 > ema200) and (ema200 > ema200_prev)
+    trend_ok_short = (ema50 < ema200) and (ema200 < ema200_prev)
+
     mode = detect_market_mode(df)
     size_mult = 1.0 if mode == "TREND" else 0.5
 
@@ -263,14 +269,22 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "sr": sr if sr else {},
         })
         return out
-
+ 
     # --- สร้าง scenarios จาก pivots ---
-    scenarios = build_scenarios(
-        pivots,
-        macro_trend=macro_trend,
-        rsi14=rsi14,
-        volume_spike=is_vol_spike,
-    ) or []
+    scenarios = (
+        build_scenarios(
+            pivots,
+            macro_trend=macro_trend,
+            rsi14=rsi14,
+            volume_spike=is_vol_spike,
+        )
+        or []
+    )
+
+    # ✅ FIX: ensure pivots are attached to every scenario
+    for sc in scenarios:
+        if "pivots" not in sc or not sc.get("pivots"):
+            sc["pivots"] = pivots
 
     # --- Context gate ---
     regime = detect_market_regime(df)
@@ -335,15 +349,22 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             sr=sr,
         )
 
-        # FIX: ลบ _force_minimal_trade_plan ออกแล้ว
-        # ถ้า build_trade_plan คืน entry=None หรือ valid=False
-        # → trade_plan.valid=False → allowed_to_trade=False → BLOCKED
-        # ให้ RR filter ทำงานตามปกติ
+        # --- Trend Structure Confirm ---
+        # เป้าหมาย: เพิ่ม winrate (ลดเทรดสวน slope EMA200)
+        trend_ok = True
+        if mode == "TREND":
+            if direction == "LONG" and not trend_ok_long:
+                trend_ok = False
+            if direction == "SHORT" and not trend_ok_short:
+                trend_ok = False
+
+            # ✅ HARD filter (เฉพาะโหมด TREND)
+            if not trend_ok:
+                continue
 
         # LIVE: Hard filter = weekly_ok + trade_plan.valid
         allowed_to_trade = bool(
             weekly_ok
-            and mtf_ok
             and trade_plan.get("valid") is True
         )
 
@@ -356,11 +377,11 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
                 entry = float(entry)
                 stype = (scenario.get("type") or "").upper()
 
-                # ✅ ABC: trigger ทันที
+                # ABC: require small confirmation beyond entry (reduce chop losses)
                 if stype == "ABC_UP":
-                    trade_plan["triggered"] = True
+                    trade_plan["triggered"] = last_close > (entry * (1 + float(ABC_CONFIRM_BUFFER)))
                 elif stype == "ABC_DOWN":
-                    trade_plan["triggered"] = True
+                    trade_plan["triggered"] = last_close < (entry * (1 - float(ABC_CONFIRM_BUFFER)))
                 else:
                     if direction == "LONG" and last_close <= entry:
                         trade_plan["triggered"] = False
@@ -377,6 +398,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         trade_plan["context_allowed"] = context_allowed
         trade_plan["context_reason"] = scenario.get("context_reason")
         trade_plan["volume_ok"] = is_vol_spike
+        trade_plan["trend_ok"] = trend_ok
 
         _send_log(
             f"[{symbol}] dir={direction} conf={scenario.get('confidence')} "
@@ -397,22 +419,24 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
 
         status = "READY" if (trade_plan.get("valid") and trade_plan.get("allowed_to_trade")) else "BLOCKED"
 
-        results.append({
-            "type": scenario.get("type"),
-            "phase": scenario.get("phase"),
-            "direction": direction,
-            "probability": scenario.get("probability"),
-            "confidence": scenario.get("confidence"),
-            "context_score": scenario.get("context_score"),
-            "weekly_ok": weekly_ok,
-            "mtf_ok": mtf_ok,
-            "context_allowed": context_allowed,
-            "context_reason": scenario.get("context_reason"),
-            "status": status,
-            "blocked_reasons": blocked,
-            "trade_plan": trade_plan,
-            "reasons": scenario.get("reasons", []),
-        })
+        results.append(
+            {
+                "type": scenario.get("type"),
+                "phase": scenario.get("phase"),
+                "direction": direction,
+                "probability": scenario.get("probability"),
+                "confidence": scenario.get("confidence"),
+                "context_score": scenario.get("context_score"),
+                "weekly_ok": weekly_ok,
+                "mtf_ok": mtf_ok,
+                "context_allowed": context_allowed,
+                "context_reason": scenario.get("context_reason"),
+                "status": status,
+                "blocked_reasons": blocked,
+                "trade_plan": trade_plan,
+                "reasons": scenario.get("reasons", []),
+            }
+        )
 
         # Execute: เฉพาะ triggered จริงเท่านั้น
         if trade_plan.get("triggered"):
@@ -436,18 +460,17 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
 
     msg = None
     if scenarios and not results:
-        msg = (
-            f"ไม่มี scenario ที่สร้างได้ "
-            f"(1D={macro_trend}, rsi14={rsi14:.1f})"
-        )
+        msg = f"ไม่มี scenario ที่สร้างได้ (1D={macro_trend}, rsi14={rsi14:.1f})"
 
     out = dict(base)
-    out.update({
-        "scenarios": results,
-        "message": msg,
-        "wave_label": wave_label,
-        "sideway": None,
-        "zones": zones if zones else [],
-        "sr": sr if sr else {},
-    })
+    out.update(
+        {
+            "scenarios": results,
+            "message": msg,
+            "wave_label": wave_label,
+            "sideway": None,
+            "zones": zones if zones else [],
+            "sr": sr if sr else {},
+        }
+    )
     return out

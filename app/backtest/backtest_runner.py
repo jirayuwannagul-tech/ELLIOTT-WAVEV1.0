@@ -223,7 +223,7 @@ def backtest_symbol(
     interval: str = "1d",
     limit: int = 1000,
     min_pct_move: float = 1.5,
-    min_rr: float = 2.0,
+    min_rr: float = 0.0,
 ) -> Dict:
     """
     Backtest แบบง่าย (summary stats เท่านั้น):
@@ -253,6 +253,14 @@ def backtest_symbol(
     in_position = False
     skip_until_bar = 0
 
+    # align default min_rr with live (wave_settings.MIN_RR)
+    if not min_rr or float(min_rr) <= 0:
+        try:
+            from app.config.wave_settings import MIN_RR as _LIVE_MIN_RR
+            min_rr = float(_LIVE_MIN_RR) if _LIVE_MIN_RR else 2.0
+        except Exception:
+            min_rr = 2.0
+
     for i in range(_START_BAR, len(df) - 1):
         if in_position or i < skip_until_bar:
             continue
@@ -276,19 +284,7 @@ def backtest_symbol(
         sc = scenarios[0]
         direction = sc["direction"]
 
-        # filters (เข้มขึ้น)
-        if macro_trend == "NEUTRAL":
-            continue
-
-        if not allow_direction(macro_trend, direction):
-            continue
-
-        # RSI confirmation เข้มกว่าเดิม
-        if direction == "LONG" and rsi14 <= 55:
-            continue
-
-        if direction == "SHORT" and rsi14 >= 45:
-            continue
+        # NOTE: backtest_runner ต้องไม่เพิ่ม filter ที่ live ไม่มี
 
         trade_plan = build_trade_plan(sc, current_price=last_close, min_rr=min_rr)
         if not trade_plan.get("valid"):
@@ -297,15 +293,12 @@ def backtest_symbol(
 
         entry = float(trade_plan["entry"])
 
-        # ABC entry = current_price → triggered ทันที
-        # IMPULSE entry = breakout price → เช็คปกติ
+        # trigger ให้เหมือน live:
+        # - ABC_UP/ABC_DOWN: trigger ทันที
+        # - อื่นๆ: breakout ผ่าน entry
         stype = (sc.get("type") or "").upper()
-        if not stype.startswith("ABC_"):
-            continue
-        if stype == "ABC_UP":
-            triggered = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
-        elif stype == "ABC_DOWN":
-            triggered = last_close < float(trade_plan["sl"]) * (1 - ABC_CONFIRM_BUFFER)
+        if stype in ("ABC_UP", "ABC_DOWN"):
+            triggered = True
         else:
             triggered = (
                 (direction == "LONG" and last_close > entry)
@@ -394,7 +387,7 @@ def backtest_symbol_trades(
     interval: str = "1d",
     limit: int = 1000,
     min_pct_move: float = 1.5,
-    min_rr: float = 2.0,
+    min_rr: float = 0.0,
     min_confidence: float = 0.0,
 ) -> Dict:
     """
@@ -408,6 +401,14 @@ def backtest_symbol_trades(
     trades: List[Dict] = []
     in_position = False
     skip_until_bar = 0
+
+    # align default min_rr with live (wave_settings.MIN_RR)
+    if not min_rr or float(min_rr) <= 0:
+        try:
+            from app.config.wave_settings import MIN_RR as _LIVE_MIN_RR
+            min_rr = float(_LIVE_MIN_RR) if _LIVE_MIN_RR else 2.0
+        except Exception:
+            min_rr = 2.0
 
     for i in range(_START_BAR, len(df) - 1):
         if in_position or i < skip_until_bar:
@@ -432,13 +433,7 @@ def backtest_symbol_trades(
         sc = scenarios[0]
         direction = sc["direction"]
 
-        # filters
-        if not allow_direction(macro_trend, direction):
-            continue
-        if direction == "LONG" and rsi14 < 50:
-            continue
-        if direction == "SHORT" and rsi14 > 50:
-            continue
+        # NOTE: backtest_runner ต้องไม่เพิ่ม filter ที่ live ไม่มี
 
         conf = float(sc.get("confidence") or sc.get("score") or 0)
         if conf < float(min_confidence):
@@ -450,13 +445,9 @@ def backtest_symbol_trades(
 
         entry = float(trade_plan["entry"])
 
-        # ABC entry = current_price → triggered ทันที
-        # IMPULSE entry = breakout price → เช็คปกติ
         stype = (sc.get("type") or "").upper()
-        if stype == "ABC_UP":
-            triggered = last_close > float(trade_plan["sl"]) * (1 + ABC_CONFIRM_BUFFER)
-        elif stype == "ABC_DOWN":
-            triggered = last_close < float(trade_plan["sl"]) * (1 - ABC_CONFIRM_BUFFER)
+        if stype in ("ABC_UP", "ABC_DOWN"):
+            triggered = True
         else:
             triggered = (
                 (direction == "LONG" and last_close > entry)
