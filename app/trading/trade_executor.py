@@ -15,6 +15,7 @@ from app.trading.binance_trader import (
     set_take_profit,
     set_leverage,
     set_margin_type,
+    adjust_quantity,
 )
 
 from app.trading.position_sizer import calculate_quantity
