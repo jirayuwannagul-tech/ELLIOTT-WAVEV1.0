@@ -1,0 +1,5700 @@
+===== app/analysis/__init__.py =====
+
+===== app/analysis/context_gate.py =====
+from typing import Dict, Optional
+
+def apply_context_gate(
+    scenario: Dict,
+    macro_bias: Dict,
+    min_confidence: float = 60.0,
+) -> Optional[Dict]:
+    """
+    Gate layer (Strict Trend-Following - Option A):
+    - ตัดสวน macro trend ทิ้ง
+    - ตัด confidence ต่ำกว่า threshold
+    - แนบ debug fields: allowed/reason/context_score (แต่ยังคืน scenario เดิม)
+    """
+
+    direction = (scenario.get("direction") or "").upper()
+    conf = float(scenario.get("confidence") or scenario.get("score") or 0)
+
+    # --- ใช้โครง macro_bias ที่มีอยู่ในระบบคุณ ---
+    bias = (macro_bias.get("bias") or "NEUTRAL").upper()
+    bias_strength = float(macro_bias.get("strength") or 0)
+    allow_long = bool(macro_bias.get("allow_long", True))
+    allow_short = bool(macro_bias.get("allow_short", True))
+
+    allowed = True
+    reason = ""
+
+    # ---- confidence filter ----
+    if conf < min_confidence:
+        allowed = False
+        reason = f"LOW_CONF({conf})"
+
+    # ---- macro direction filter (Strict) ----
+    if direction == "LONG" and not allow_long:
+        allowed = False
+        reason = f"BLOCKED_BY_MACRO({bias})"
+    if direction == "SHORT" and not allow_short:
+        allowed = False
+        reason = f"BLOCKED_BY_MACRO({bias})"
+
+    # ---- context score ----
+    context_score = round((conf * 0.7) + (bias_strength * 0.3), 2)
+
+    # ❌ ถ้าไม่ผ่าน: คืน None ให้ wave_engine ตัดทิ้ง
+    if not allowed:
+        return None
+
+    # ✅ ถ้าผ่าน: คืน “scenario เดิม” + แนบฟิลด์ debug
+    out = dict(scenario)
+    out["allowed"] = True
+    out["gate_reason"] = reason
+    out["context_score"] = context_score
+    return out
+===== app/analysis/fib.py =====
+def fib_retracement(start: float, end: float, current: float):
+    move = end - start
+    if move == 0:
+        return None
+    retrace = (current - end) / move
+
+    # ถ้า retrace เกิน 1.0 = ราคากลับเกินจุดเริ่มต้น Wave1 → invalid
+    if retrace > 1.0:
+        return None
+
+    # ถ้าติดลบ = ยังไม่ได้ retrace เลย → invalid
+    if retrace < 0:
+        return None
+
+    return retrace
+
+def fib_extension(a: float, b: float, c: float):
+    """
+    Calculate Fibonacci extension targets
+    Wave A = a -> b
+    Wave B = retrace to c
+    """
+
+    length = b - a
+
+    targets = {
+        "1.0": c + length,
+        "1.618": c + (length * 1.618),
+        "2.0": c + (length * 2.0),
+    }
+
+    return targets
+
+
+def fib_zone_match(value: float):
+    """
+    Check which common fib zone the value fits
+    """
+
+    zones = {
+        "0.236": 0.236,
+        "0.382": 0.382,
+        "0.5": 0.5,
+        "0.618": 0.618,
+        "0.786": 0.786,
+        "1.0": 1.0,
+        "1.618": 1.618,
+    }
+
+    tolerance = 0.03  # 3%
+
+    matches = []
+
+    for name, level in zones.items():
+        if abs(value - level) <= tolerance:
+            matches.append(name)
+
+    return matches
+===== app/analysis/macro_bias.py =====
+# app/analysis/macro_bias.py
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict
+
+
+@dataclass
+class MacroBias:
+    bias: str          # "LONG" | "SHORT" | "NEUTRAL"
+    strength: float    # 0-100
+    allow_long: bool
+    allow_short: bool
+    notes: str = ""
+
+
+def _clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
+    return max(lo, min(float(x), hi))
+
+
+def compute_macro_bias(regime: Dict, rsi14: float = 50.0) -> Dict:
+    """
+    Input:
+      - regime: dict จาก detect_market_regime()
+      - rsi14: ค่า RSI ล่าสุด (ใช้ยืนยันโมเมนตัมแบบเบา ๆ)
+
+    Output:
+      - dict MacroBias พร้อม allow_long/allow_short สำหรับ gate
+    """
+    rg = (regime or {}).get("regime", "CHOP")
+    tr = (regime or {}).get("trend", "NEUTRAL")
+    vol = (regime or {}).get("vol", "MID")
+
+    trend_strength = float((regime or {}).get("trend_strength", 0) or 0)
+    vol_score = float((regime or {}).get("vol_score", 0) or 0)
+    rsi14 = float(rsi14 or 50.0)
+
+    bias = "NEUTRAL"
+    strength = 0.0
+
+    # ---- core bias from trend ----
+    if rg == "TREND":
+        if tr == "BULL":
+            bias = "LONG"
+            strength = 55.0 + (trend_strength * 0.35)
+            if rsi14 >= 55:
+                strength += 5.0
+        elif tr == "BEAR":
+            bias = "SHORT"
+            strength = 55.0 + (trend_strength * 0.35)
+            if rsi14 <= 45:
+                strength += 5.0
+        else:
+            bias = "NEUTRAL"
+            strength = 35.0
+
+    elif rg == "RANGE":
+        # range: ไม่ bias แรง ให้ neutral เป็นหลัก
+        bias = "NEUTRAL"
+        strength = 35.0
+        # แต่ถ้า rsi เอียงชัด ก็ให้ bias เบา ๆ
+        if rsi14 >= 60:
+            bias = "LONG"
+            strength = 45.0
+        elif rsi14 <= 40:
+            bias = "SHORT"
+            strength = 45.0
+
+    else:  # CHOP
+        bias = "NEUTRAL"
+        strength = 25.0
+        # chop + vol สูง => ระวังสุด
+        if vol == "HIGH":
+            strength -= 5.0
+
+    # ---- volatility penalty (กันมั่วใน vol สูง) ----
+    if vol_score >= 75:
+        strength -= 8.0
+    elif vol_score <= 30:
+        strength += 3.0
+
+    strength = _clamp(strength)
+
+    # ---- allow gates ----
+    # FIX: ลด threshold จาก 60 → 50
+    # เดิม strength>=60 แทบไม่เคยถึง → allow_long/allow_short เป็น True ตลอด
+    # ใหม่ strength>=50 ทำให้ TREND regime ที่มี bias ชัดบล็อกฝั่งสวนได้จริง
+    allow_long = True
+    allow_short = True
+
+    if bias == "LONG" and strength >= 50:
+        allow_short = False
+    if bias == "SHORT" and strength >= 50:
+        allow_long = False
+
+    mb = MacroBias(
+        bias=bias,
+        strength=round(strength, 2),
+        allow_long=allow_long,
+        allow_short=allow_short,
+        notes=f"rg={rg} tr={tr} vol={vol} rsi={rsi14:.1f} ts={trend_strength:.1f} vs={vol_score:.1f}",
+    )
+    return mb.__dict__
+===== app/analysis/market_regime.py =====
+# app/analysis/market_regime.py
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Optional
+
+import pandas as pd
+
+
+@dataclass
+class MarketRegime:
+    regime: str              # "TREND" | "RANGE" | "CHOP"
+    trend: str               # "BULL" | "BEAR" | "NEUTRAL"
+    vol: str                 # "LOW" | "MID" | "HIGH"
+    trend_strength: float    # 0-100 (คร่าว ๆ)
+    vol_score: float         # 0-100 (คร่าว ๆ)
+    notes: str = ""
+
+
+def _safe_float(x, default: float = 0.0) -> float:
+    try:
+        v = float(x)
+        return v
+    except Exception:
+        return default
+
+
+def _pct(a: float, b: float) -> float:
+    # percent diff of a vs b, guard b=0
+    b = float(b)
+    if b == 0:
+        return 0.0
+    return abs((float(a) - b) / b) * 100.0
+
+
+def detect_market_regime(
+    df: pd.DataFrame,
+    ema_fast_col: str = "ema50",
+    ema_slow_col: str = "ema200",
+    atr_col: str = "atr14",
+    rsi_col: str = "rsi14",
+) -> Dict:
+    """
+    ต้องมีคอลัมน์: close, ema50, ema200, atr14, rsi14 (ตาม pipeline ปัจจุบันของคุณ)
+    คืน dict ที่เอาไปใช้ gate/score ต่อได้ทันที
+    """
+
+    if df is None or len(df) < 250:
+        mr = MarketRegime(
+            regime="CHOP",
+            trend="NEUTRAL",
+            vol="MID",
+            trend_strength=0.0,
+            vol_score=0.0,
+            notes="len<250",
+        )
+        return mr.__dict__
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) >= 2 else last
+
+    close = _safe_float(last.get("close"))
+    ema_fast = _safe_float(last.get(ema_fast_col))
+    ema_slow = _safe_float(last.get(ema_slow_col))
+    atr = _safe_float(last.get(atr_col))
+    rsi = _safe_float(last.get(rsi_col), 50.0)
+
+    # -------- Trend direction (macro-ish) ----------
+    # ใช้ระยะห่าง EMA + slope คร่าว ๆ
+    ema_gap_pct = _pct(ema_fast, ema_slow)  # % ระยะห่างระหว่าง ema50 กับ ema200
+    ema_fast_prev = _safe_float(prev.get(ema_fast_col), ema_fast)
+    ema_slow_prev = _safe_float(prev.get(ema_slow_col), ema_slow)
+
+    fast_slope = ema_fast - ema_fast_prev
+    slow_slope = ema_slow - ema_slow_prev
+
+    trend = "NEUTRAL"
+    if ema_fast > ema_slow and fast_slope >= 0:
+        trend = "BULL"
+    elif ema_fast < ema_slow and fast_slope <= 0:
+        trend = "BEAR"
+
+    # -------- Volatility ----------
+    # ATR เป็นหน่วยราคา → ทำให้เป็น % ของ close
+    atr_pct = (atr / close * 100.0) if close else 0.0
+
+    # แปลงเป็น vol_score 0-100 แบบง่าย (พอใช้ gate)
+    # 1% = ต่ำ, 2.5% = กลาง, 4%+ = สูง (ปรับได้ทีหลัง)
+    if atr_pct <= 1.2:
+        vol = "LOW"
+        vol_score = 25.0
+    elif atr_pct <= 2.8:
+        vol = "MID"
+        vol_score = 55.0
+    else:
+        vol = "HIGH"
+        vol_score = 80.0
+
+    # -------- Regime (TREND / RANGE / CHOP) ----------
+    # หลักง่าย: ถ้า EMA gap ใหญ่ + slope ไปทางเดียวกัน -> TREND
+    # ถ้า gap เล็ก + RSI กลาง ๆ -> RANGE
+    # นอกนั้น -> CHOP
+    same_slope_dir = (fast_slope >= 0 and slow_slope >= 0) or (fast_slope <= 0 and slow_slope <= 0)
+
+    trend_strength = 0.0
+    # strength คร่าว ๆ จาก gap + slope + RSI bias
+    trend_strength += min(ema_gap_pct * 10.0, 60.0)  # gap 6% -> +60
+    trend_strength += 20.0 if same_slope_dir else 0.0
+    if trend == "BULL":
+        trend_strength += 10.0 if rsi >= 55 else 0.0
+    elif trend == "BEAR":
+        trend_strength += 10.0 if rsi <= 45 else 0.0
+    trend_strength = max(0.0, min(trend_strength, 100.0))
+
+    regime = "CHOP"
+    if ema_gap_pct >= 1.0 and same_slope_dir:
+        regime = "TREND"
+    elif ema_gap_pct <= 0.5 and 45.0 <= rsi <= 55.0:
+        regime = "RANGE"
+
+    mr = MarketRegime(
+        regime=regime,
+        trend=trend,
+        vol=vol,
+        trend_strength=round(trend_strength, 2),
+        vol_score=round(vol_score, 2),
+        notes=f"ema_gap={ema_gap_pct:.2f}% atr%={atr_pct:.2f} rsi={rsi:.1f}",
+    )
+    return mr.__dict__
+===== app/analysis/multi_tf.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
+import pandas as pd
+import logging
+logger = logging.getLogger(__name__)
+
+from app.data.binance_fetcher import fetch_ohlcv, drop_unclosed_candle
+from app.indicators.ema import add_ema
+from app.indicators.rsi import add_rsi
+from app.indicators.atr import add_atr
+from app.indicators.trend_filter import trend_filter_ema
+from app.analysis.pivot import find_fractal_pivots, filter_pivots
+
+
+@dataclass
+class MTFSummary:
+    symbol: str
+    weekly_trend: str        # BULL/BEAR/NEUTRAL
+    h4_trend: str            # BULL/BEAR/NEUTRAL
+    weekly_permit_long: bool
+    weekly_permit_short: bool
+    h4_confirm_long: bool
+    h4_confirm_short: bool
+    notes: str = ""
+
+
+def _prepare_df(symbol: str, interval: str, limit: int) -> pd.DataFrame:
+    df = fetch_ohlcv(symbol, interval=interval, limit=limit)
+    df = drop_unclosed_candle(df)
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+
+    # Indicators needed
+    df = add_ema(df, lengths=(50, 200))
+    df = add_rsi(df, length=14)
+    df = add_atr(df, length=14)
+    return df
+
+
+def _last_close(df: pd.DataFrame) -> Optional[float]:
+    try:
+        return float(df["close"].iloc[-1])
+    except Exception:
+        return None
+
+
+def _h4_structure_confirm(df4h: pd.DataFrame) -> Tuple[bool, bool, str]:
+    """
+    Confirm แบบง่าย (ไม่ยาว):
+    - LONG confirm: close > last pivot-high price
+    - SHORT confirm: close < last pivot-low price
+    """
+    if df4h is None or len(df4h) < 250:
+        logger.warning(f"4H data ไม่พอ (len={len(df4h) if df4h is not None else 0}) → h4_confirm=False")
+        return False, False, "4H len<250"
+
+    close = _last_close(df4h)
+    if close is None:
+        return False, False, "4H no close"
+
+    pivots = find_fractal_pivots(df4h, left=2, right=2)
+    pivots = filter_pivots(pivots, min_pct_move=0.8)  # 4H ลด threshold เพื่อไม่ให้โล่ง
+
+    lastH = None
+    lastL = None
+    for p in reversed(pivots):
+        if lastH is None and p.get("type") == "H":
+            lastH = float(p.get("price"))
+        if lastL is None and p.get("type") == "L":
+            lastL = float(p.get("price"))
+        if lastH is not None and lastL is not None:
+            break
+
+    if lastH is None or lastL is None:
+        logger.warning(f"4H pivots ไม่พอ → h4_confirm=False")
+        return False, False, "4H pivots not enough"
+
+    confirm_long = close > lastH
+    confirm_short = close < lastL
+    return confirm_long, confirm_short, f"4H close={close:.2f} lastH={lastH:.2f} lastL={lastL:.2f}"
+
+
+def get_mtf_summary(
+    symbol: str,
+    weekly_limit: int = 300,
+    h4_limit: int = 800,
+) -> Dict:
+    """
+    1W = permit direction
+    4H = confirm entry
+    """
+
+    dfw = _prepare_df(symbol, "1w", weekly_limit)
+    df4 = _prepare_df(symbol, "4h", h4_limit)
+
+    if dfw is None or len(dfw) < 250:
+        logger.warning(f"[{symbol}] MTF weekly data ไม่พอ (len={len(dfw) if dfw is not None else 0}) → permit both, h4 skip")
+        s = MTFSummary(
+            symbol=symbol,
+            weekly_trend="NEUTRAL",
+            h4_trend="NEUTRAL",
+            weekly_permit_long=True,
+            weekly_permit_short=True,
+            h4_confirm_long=False,
+            h4_confirm_short=False,
+            notes="weekly len<250",
+        )
+        return s.__dict__
+
+    weekly_trend = trend_filter_ema(dfw)
+    h4_trend = trend_filter_ema(df4) if (df4 is not None and len(df4) >= 250) else "NEUTRAL"
+
+    # Strict permit: 1W BULL => long only, 1W BEAR => short only, NEUTRAL => both
+    weekly_permit_long = True
+    weekly_permit_short = True
+    if weekly_trend == "BULL":
+        weekly_permit_short = False
+    elif weekly_trend == "BEAR":
+        weekly_permit_long = False
+
+    # 4H confirm
+    h4_confirm_long, h4_confirm_short, note4 = _h4_structure_confirm(df4)
+
+    s = MTFSummary(
+        symbol=symbol,
+        weekly_trend=weekly_trend,
+        h4_trend=h4_trend,
+        weekly_permit_long=weekly_permit_long,
+        weekly_permit_short=weekly_permit_short,
+        h4_confirm_long=h4_confirm_long,
+        h4_confirm_short=h4_confirm_short,
+        notes=note4,
+    )
+    return s.__dict__
+
+===== app/analysis/pivot.py =====
+import pandas as pd
+
+
+def find_fractal_pivots(df: pd.DataFrame, left: int = 2, right: int = 2):
+    """
+    Detect fractal pivots (2-2 by default)
+    Returns list of dict:
+    {
+        "index": int,
+        "price": float,
+        "type": "H" or "L"
+    }
+
+    หมายเหตุ: แต่ละแท่งได้ pivot ได้แค่ 1 ประเภท (H หรือ L)
+    ถ้าเป็นได้ทั้งคู่ (เช่น doji ใหญ่) → เลือกฝั่งที่ move ห่างจาก prev_close มากกว่า
+    """
+
+    pivots = []
+
+    for i in range(left, len(df) - right):
+        high_slice = df["high"].iloc[i - left : i + right + 1]
+        low_slice = df["low"].iloc[i - left : i + right + 1]
+
+        current_high = float(df["high"].iloc[i])
+        current_low = float(df["low"].iloc[i])
+
+        is_pivot_high = current_high == high_slice.max()
+        is_pivot_low = current_low == low_slice.min()
+
+        # ✅ กัน H+L บนแท่งเดียวกัน
+        # ถ้าเป็นได้ทั้งคู่ → เลือกฝั่งที่ move ห่างจาก prev_close มากกว่า
+        if is_pivot_high and is_pivot_low:
+            prev_close = float(df["close"].iloc[i - 1])
+            high_move = abs(current_high - prev_close)
+            low_move = abs(current_low - prev_close)
+
+            if high_move >= low_move:
+                is_pivot_low = False   # เลือก H
+            else:
+                is_pivot_high = False  # เลือก L
+
+        if is_pivot_high:
+            pivots.append(
+                {
+                    "index": i,
+                    "price": current_high,
+                    "type": "H",
+                }
+            )
+        elif is_pivot_low:
+            pivots.append(
+                {
+                    "index": i,
+                    "price": current_low,
+                    "type": "L",
+                }
+            )
+
+    return pivots
+
+
+def filter_pivots(pivots, min_pct_move: float = 0.5):
+    """
+    Remove small noisy pivots
+    min_pct_move = minimum % difference between pivots
+    """
+
+    if not pivots:
+        return []
+
+    filtered = [pivots[0]]
+
+    for pivot in pivots[1:]:
+        last = filtered[-1]
+
+        move_pct = abs((pivot["price"] - last["price"]) / last["price"]) * 100
+
+        if move_pct >= min_pct_move:
+            filtered.append(pivot)
+
+    return filtered
+===== app/analysis/trend_detector.py =====
+def detect_market_mode(df):
+    """
+    แยกตลาดเป็น TREND หรือ SIDEWAY แบบง่าย
+    ใช้ EMA50 / EMA200 + ATR
+    """
+
+    if "ema50" not in df.columns or "ema200" not in df.columns:
+        return "TREND"
+
+    ema50 = float(df["ema50"].iloc[-1])
+    ema200 = float(df["ema200"].iloc[-1])
+    atr = float(df["atr14"].iloc[-1]) if "atr14" in df.columns else 0.0
+    price = float(df["close"].iloc[-1])
+
+    # ถ้า EMA ใกล้กันมาก + ATR ต่ำ → sideway
+    ema_gap_pct = abs(ema50 - ema200) / price * 100
+
+    if ema_gap_pct < 0.5 and atr / price < 0.02:
+        return "SIDEWAY"
+
+    return "TREND"
+===== app/analysis/wave_engine.py =====
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+import logging
+logger = logging.getLogger(__name__)
+
+import pandas as pd
+import os
+import requests as req
+
+from app.data.binance_fetcher import fetch_ohlcv, drop_unclosed_candle
+from app.analysis.pivot import find_fractal_pivots, filter_pivots
+from app.analysis.wave_scenarios import build_scenarios
+from app.risk.risk_manager import build_trade_plan
+
+from app.indicators.ema import add_ema
+from app.indicators.rsi import add_rsi
+from app.indicators.atr import add_atr
+from app.indicators.volume import add_volume_ma, volume_spike
+from app.indicators.trend_filter import trend_filter_ema
+
+from app.analysis.wave_labeler import label_pivot_chain
+from app.analysis.context_gate import apply_context_gate
+from app.analysis.market_regime import detect_market_regime
+from app.analysis.macro_bias import compute_macro_bias
+from app.analysis.multi_tf import get_mtf_summary
+from app.analysis.zones import build_zones_from_pivots, nearest_support_resist
+from app.analysis.trend_detector import detect_market_mode
+from app.config.wave_settings import (
+    BARS,
+    TIMEFRAME,
+    MIN_RR,
+    MIN_CONFIDENCE_LIVE,
+    ABC_CONFIRM_BUFFER,
+)
+
+
+def _send_log(msg: str) -> None:
+    try:
+        vps_url = os.getenv("VPS_URL", "")
+        exec_token = os.getenv("EXEC_TOKEN", "")
+        if vps_url:
+            req.post(
+                f"{vps_url}/log",
+                json={"msg": msg},
+                headers={"X-EXEC-TOKEN": exec_token},
+                timeout=5,
+            )
+    except Exception:
+        pass
+
+def _safe_float(x, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+# ── ลบ _fallback_entry_from_pivots ──────────────────────────────────────────
+# เหตุผล: ใช้คู่กับ _force_minimal_trade_plan เท่านั้น ซึ่งถูกลบออกแล้ว
+# ถ้า build_trade_plan คืน entry=None → valid=False → BLOCKED ตามปกติ
+
+# ── ลบ _force_minimal_trade_plan ────────────────────────────────────────────
+# เหตุผล: bypass valid=True โดยไม่ผ่านการคำนวณ RR จริง
+#         ทำให้ F_RR_VALID ไม่มีผลเลยใน Live
+#         ลบออกเพื่อให้ RR filter ทำงานได้ตามปกติ
+
+# ── ลบ _ensure_basic_risk_levels ────────────────────────────────────────────
+# เหตุผล: ไม่ถูกเรียกใช้ที่ไหนใน codebase (dead code)
+
+def _range_levels(df: pd.DataFrame, lookback: int = 60) -> Dict:
+    """คำนวณกรอบ sideway แบบง่ายจาก lookback ล่าสุด"""
+    if df is None or len(df) < max(lookback, 20):
+        return {"range_low": None, "range_high": None, "atr": None}
+
+    sub = df.iloc[-lookback:].copy()
+    range_low = _safe_float(sub["low"].min(), 0.0)
+    range_high = _safe_float(sub["high"].max(), 0.0)
+
+    atr = None
+    if "atr14" in sub.columns:
+        atr = _safe_float(sub["atr14"].iloc[-1], 0.0)
+
+    return {
+        "range_low": float(range_low) if range_low else None,
+        "range_high": float(range_high) if range_high else None,
+        "atr": float(atr) if atr else None,
+    }
+
+
+def run_sideway_engine(symbol: str, df: pd.DataFrame, base: Dict) -> Dict:
+    """
+    SIDEWAY ENGINE (v0): mean-reversion ในกรอบ
+    """
+    base = dict(base or {})
+
+    price = _safe_float(base.get("price"), 0.0)
+    rsi14 = _safe_float(base.get("rsi14"), 50.0)
+    weekly_permit_long = bool(base.get("weekly_permit_long", True))
+    weekly_permit_short = bool(base.get("weekly_permit_short", True))
+
+    lv = _range_levels(df, lookback=60)
+    range_low = lv.get("range_low")
+    range_high = lv.get("range_high")
+    atr = lv.get("atr")
+
+    base["sideway"] = {
+        "range_low": range_low,
+        "range_high": range_high,
+        "atr": atr,
+        "lookback": 60,
+    }
+
+    if not range_low or not range_high or range_high <= range_low:
+        base["scenarios"] = []
+        base["message"] = "SIDEWAY: ข้อมูลยังไม่พอคำนวณกรอบ"
+        return base
+
+    buffer = float(atr) * 0.5 if atr and atr > 0 else float(price) * 0.005
+
+    near_support = price <= (range_low + buffer)
+    near_resist = price >= (range_high - buffer)
+
+    scenarios: List[Dict] = []
+
+    if near_support and rsi14 <= 45 and weekly_permit_long:
+        sc = {
+            "type": "SIDEWAY_RANGE",
+            "phase": "MEAN_REVERT",
+            "direction": "LONG",
+            "probability": 0.0,
+            "confidence": 65.0,
+            "range_low": range_low,
+            "range_high": range_high,
+            "atr": atr,
+            "reasons": [
+                f"Near range low ({range_low:,.2f})",
+                f"RSI14 low ({rsi14:.1f})",
+            ],
+        }
+        plan = build_trade_plan(sc, current_price=price, min_rr=2.0)
+        plan["triggered"] = True
+        sc["trade_plan"] = plan
+        scenarios.append(sc)
+
+    if near_resist and rsi14 >= 55 and weekly_permit_short:
+        sc = {
+            "type": "SIDEWAY_RANGE",
+            "phase": "MEAN_REVERT",
+            "direction": "SHORT",
+            "probability": 0.0,
+            "confidence": 65.0,
+            "range_low": range_low,
+            "range_high": range_high,
+            "atr": atr,
+            "reasons": [
+                f"Near range high ({range_high:,.2f})",
+                f"RSI14 high ({rsi14:.1f})",
+            ],
+        }
+        plan = build_trade_plan(sc, current_price=price, min_rr=2.0)
+        plan["triggered"] = True
+        sc["trade_plan"] = plan
+        scenarios.append(sc)
+
+    base["scenarios"] = scenarios
+
+    if scenarios:
+        base["message"] = f"SIDEWAY: พบ setup ในกรอบ ({range_low:,.2f} - {range_high:,.2f})"
+    else:
+        base["message"] = f"SIDEWAY: ยังไม่เข้าเงื่อนไข (กรอบ {range_low:,.2f} - {range_high:,.2f})"
+
+    return base
+
+def analyze_symbol(symbol: str) -> Optional[Dict]:
+    df = fetch_ohlcv(symbol, interval=TIMEFRAME, limit=BARS)
+    df = drop_unclosed_candle(df)
+
+    if df is None or len(df) < 250:
+        return None
+
+    df = add_ema(df, lengths=(50, 200))
+    df = add_rsi(df, length=14)
+    df = add_atr(df, length=14)
+    df = add_volume_ma(df, length=20)
+
+    # --- ATR Gate (align with backtest): ต้องเป็น compression ก่อน ---
+    atr = float(df["atr14"].iloc[-1])
+    atr_ma50 = float(df["atr14"].rolling(50).mean().iloc[-1]) if len(df) >= 50 else 0.0
+
+    if atr_ma50 > 0 and atr >= atr_ma50:
+        if (os.getenv("BYPASS_ATR_GATE", "") or "").lower() in ("1","true","yes"):
+            pass  # debug only: allow scenarios generation
+        else:
+            return {
+                "symbol": symbol,
+                "price": float(df["close"].iloc[-1]),
+                "scenarios": [],
+                "message": "ATR_GATE: ตลาดยังไม่ compress",
+                "mode": detect_market_mode(df),
+                "macro_trend": trend_filter_ema(df),
+                "rsi14": float(df["rsi14"].iloc[-1]),
+                "volume_spike": False,
+                "mtf": {},
+                "wave_label": {"label": None, "matches": []},
+                "sideway": None,
+                "zones": [],
+                "sr": {},
+                "position_size_mult": 1.0,
+            }
+
+    last_close = float(df["close"].iloc[-1])
+    current_price = last_close
+    close_today = last_close
+    close_yesterday = float(df["close"].iloc[-2]) if len(df) >= 2 else None
+
+    macro_trend = trend_filter_ema(df)
+    rsi14 = float(df["rsi14"].iloc[-1])
+    is_vol_spike = bool(volume_spike(df, length=20, multiplier=1.5))
+
+    # Trend Structure Confirm (สำหรับโหมด TREND)
+    ema50 = float(df["ema50"].iloc[-1])
+    ema200 = float(df["ema200"].iloc[-1])
+    ema200_prev = float(df["ema200"].iloc[-2]) if len(df) >= 2 else ema200
+    trend_ok_long  = (ema50 > ema200) and (ema200 > ema200_prev)
+    trend_ok_short = (ema50 < ema200) and (ema200 < ema200_prev)
+
+    mode = detect_market_mode(df)
+    size_mult = 1.0 if mode == "TREND" else 0.5
+
+    mtf = get_mtf_summary(symbol) or {}
+    weekly_permit_long = bool(mtf.get("weekly_permit_long", True))
+    weekly_permit_short = bool(mtf.get("weekly_permit_short", True))
+    h4_confirm_long = bool(mtf.get("h4_confirm_long", False))
+    h4_confirm_short = bool(mtf.get("h4_confirm_short", False))
+
+    base = {
+        "symbol": symbol,
+        "price": current_price,
+        "close_today": close_today,
+        "close_yesterday": close_yesterday,
+        "macro_trend": macro_trend,
+        "rsi14": rsi14,
+        "volume_spike": is_vol_spike,
+        "mtf": mtf,
+        "mode": mode,
+        "position_size_mult": size_mult,
+    }
+
+    if mode == "SIDEWAY":
+        base["weekly_permit_long"] = weekly_permit_long
+        base["weekly_permit_short"] = weekly_permit_short
+        return run_sideway_engine(symbol, df, base)
+
+    pivots = find_fractal_pivots(df)
+    pivots = filter_pivots(pivots, min_pct_move=1.5)
+    wave_label = label_pivot_chain(pivots)
+
+    zones = build_zones_from_pivots(df)
+    sr = nearest_support_resist(zones, price=current_price)
+
+    if len(pivots) < 4:
+        out = dict(base)
+        out.update({
+            "scenarios": [],
+            "message": "โครงสร้างยังไม่ชัด",
+            "wave_label": wave_label,
+            "sideway": None,
+            "zones": zones if zones else [],
+            "sr": sr if sr else {},
+        })
+        return out
+ 
+    # --- สร้าง scenarios จาก pivots ---
+    scenarios = (
+        build_scenarios(
+            pivots,
+            macro_trend=macro_trend,
+            rsi14=rsi14,
+            volume_spike=is_vol_spike,
+        )
+        or []
+    )
+
+    # ✅ FIX: ensure pivots are attached to every scenario
+    for sc in scenarios:
+        if "pivots" not in sc or not sc.get("pivots"):
+            sc["pivots"] = pivots
+
+    # --- Context gate ---
+    regime = detect_market_regime(df)
+    macro_bias = compute_macro_bias(regime, rsi14=rsi14)
+
+    normalized: List[Dict] = []
+    for sc in scenarios:
+        # ✅ HARD BLOCK: fallback scenarios must never be tradable
+        if sc.get("is_fallback"):
+            sc2 = dict(sc)
+            sc2["context_allowed"] = False
+            sc2["context_reason"] = "fallback_scenario_blocked"
+            normalized.append(sc2)
+            continue
+
+        gated = apply_context_gate(
+            scenario=sc,
+            macro_bias=macro_bias,
+            min_confidence=MIN_CONFIDENCE_LIVE,
+        )
+
+        if isinstance(gated, dict) and gated.get("direction"):
+            sc2 = dict(gated)
+            sc2["context_allowed"] = True
+            sc2["context_reason"] = None
+            normalized.append(sc2)
+        else:
+            sc2 = dict(sc)
+            sc2["context_allowed"] = False
+            sc2["context_reason"] = "blocked_by_context_gate"
+            normalized.append(sc2)
+
+    scenarios = normalized
+
+    results: List[Dict] = []
+
+    for scenario in scenarios:
+        direction = (scenario.get("direction") or "").upper()
+        if not direction:
+            continue
+
+        # --- Weekly permit (HARD filter) ---
+        weekly_ok = True
+        if direction == "LONG" and not weekly_permit_long:
+            weekly_ok = False
+        if direction == "SHORT" and not weekly_permit_short:
+            weekly_ok = False
+
+        # --- 4H confirm (SOFT flag เท่านั้น) ---
+        mtf_ok = True
+        if direction == "LONG" and not h4_confirm_long:
+            mtf_ok = False
+        if direction == "SHORT" and not h4_confirm_short:
+            mtf_ok = False
+
+        context_allowed = bool(scenario.get("context_allowed", True))
+
+        trade_plan = build_trade_plan(
+            scenario,
+            current_price=current_price,
+            min_rr=float(MIN_RR) if MIN_RR else 3.0,
+            sr=sr,
+        )
+
+        # --- Trend Structure Confirm ---
+        # เป้าหมาย: เพิ่ม winrate (ลดเทรดสวน slope EMA200)
+        trend_ok = True
+        if mode == "TREND":
+            if direction == "LONG" and not trend_ok_long:
+                trend_ok = False
+            if direction == "SHORT" and not trend_ok_short:
+                trend_ok = False
+
+            # ✅ HARD filter (เฉพาะโหมด TREND)
+            if not trend_ok:
+                continue
+
+        # LIVE: Hard filter = weekly_ok + trade_plan.valid
+        allowed_to_trade = bool(
+            weekly_ok
+            and trade_plan.get("valid") is True
+        )
+
+        # --- Trigger logic ---
+        if not allowed_to_trade:
+            trade_plan["triggered"] = False
+        else:
+            entry = trade_plan.get("entry")
+            if entry is not None:
+                entry = float(entry)
+                stype = (scenario.get("type") or "").upper()
+
+                # ABC: require small confirmation beyond entry (reduce chop losses)
+                if stype == "ABC_UP":
+                    trade_plan["triggered"] = last_close > (entry * (1 + float(ABC_CONFIRM_BUFFER)))
+                elif stype == "ABC_DOWN":
+                    trade_plan["triggered"] = last_close < (entry * (1 - float(ABC_CONFIRM_BUFFER)))
+                else:
+                    if direction == "LONG" and last_close <= entry:
+                        trade_plan["triggered"] = False
+                    elif direction == "SHORT" and last_close >= entry:
+                        trade_plan["triggered"] = False
+                    else:
+                        trade_plan["triggered"] = True
+            else:
+                trade_plan["triggered"] = False
+    
+        trade_plan["allowed_to_trade"] = allowed_to_trade
+        trade_plan["weekly_ok"] = weekly_ok
+        trade_plan["mtf_ok"] = mtf_ok
+        trade_plan["context_allowed"] = context_allowed
+        trade_plan["context_reason"] = scenario.get("context_reason")
+        trade_plan["volume_ok"] = is_vol_spike
+        trade_plan["trend_ok"] = trend_ok
+
+        _send_log(
+            f"[{symbol}] dir={direction} conf={scenario.get('confidence')} "
+            f"weekly_ok={weekly_ok} mtf_ok={mtf_ok} context={context_allowed} "
+            f"valid={trade_plan.get('valid')} triggered={trade_plan.get('triggered')}"
+        )
+
+        # === STATUS / BLOCK REASON ===
+        blocked = []
+        if not weekly_ok:
+            blocked.append("weekly_permit_block")
+        if not mtf_ok:
+            blocked.append("h4_confirm_block")
+        if not context_allowed:
+            blocked.append("context_gate_block")
+        if not trade_plan.get("valid"):
+            blocked.append("rr_or_plan_invalid")
+
+        status = "READY" if (trade_plan.get("valid") and trade_plan.get("allowed_to_trade")) else "BLOCKED"
+
+        results.append(
+            {
+                "type": scenario.get("type"),
+                "phase": scenario.get("phase"),
+                "direction": direction,
+                "probability": scenario.get("probability"),
+                "confidence": scenario.get("confidence"),
+                "context_score": scenario.get("context_score"),
+                "weekly_ok": weekly_ok,
+                "mtf_ok": mtf_ok,
+                "context_allowed": context_allowed,
+                "context_reason": scenario.get("context_reason"),
+                "status": status,
+                "blocked_reasons": blocked,
+                "trade_plan": trade_plan,
+                "reasons": scenario.get("reasons", []),
+            }
+        )
+
+        # Execute: เฉพาะ triggered จริงเท่านั้น
+        if trade_plan.get("triggered"):
+            try:
+                vps_url = (os.getenv("VPS_URL", "") or "").strip()
+                exec_token = (os.getenv("EXEC_TOKEN", "") or "").strip()
+
+                if not vps_url.startswith("http"):
+                    logger.info(f"[{symbol}] SKIP execute (VPS_URL not set)")
+                    continue
+
+                req.post(
+                    f"{vps_url}/execute",
+                    json={"symbol": symbol, "direction": direction, "trade_plan": trade_plan},
+                    headers={"X-EXEC-TOKEN": exec_token},
+                    timeout=10,
+                )
+                logger.info(f"[{symbol}] ส่ง signal ไป VPS สำเร็จ")
+            except Exception as e:
+                logger.error(f"[{symbol}] ส่ง signal ไป VPS ล้มเหลว: {e}")
+
+    msg = None
+    if scenarios and not results:
+        msg = f"ไม่มี scenario ที่สร้างได้ (1D={macro_trend}, rsi14={rsi14:.1f})"
+
+    out = dict(base)
+    out.update(
+        {
+            "scenarios": results,
+            "message": msg,
+            "wave_label": wave_label,
+            "sideway": None,
+            "zones": zones if zones else [],
+            "sr": sr if sr else {},
+        }
+    )
+    return out
+===== app/analysis/wave_labeler.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+from app.analysis.wave_rules import validate_impulse, validate_abc
+
+
+@dataclass
+class WaveLabel:
+    pattern: str               # "IMPULSE_LONG" / "IMPULSE_SHORT" / "ABC_UP" / "ABC_DOWN"
+    direction: str             # "LONG" / "SHORT"
+    start_index: int           # pivot-chain start (0-based in pivots list)
+    end_index: int             # pivot-chain end
+    pivot_count: int           # 6 for impulse, 4 for abc
+    confidence: float          # 0-100 (ใช้ score แบบเบื้องต้นจากกฎที่ผ่าน)
+    reasons: List[str]         # รายการเหตุผล/คำเตือน (ถ้ามี)
+    pivots: List[Dict]         # pivots slice ที่ใช้
+
+
+def _score_from_reasons(base: float, reasons: List[str]) -> float:
+    # ยิ่งมี reasons มาก = ความมั่นใจลด (แต่ ABC อนุญาต warning ได้)
+    score = float(base) - (len(reasons) * 5.0)
+    if score < 1:
+        score = 1.0
+    if score > 100:
+        score = 100.0
+    return score
+
+
+def label_pivot_chain(pivots: List[Dict]) -> Dict:
+    """
+    สแกน pivot chain ทั้งเส้น แล้วหา pattern ที่ "จบล่าสุด" (ใกล้ท้ายที่สุด)
+    คืนค่า label เดียวที่ดีที่สุด (หรือ None)
+    - IMPULSE ใช้ 6 pivots
+    - ABC ใช้ 4 pivots
+    """
+
+    if not pivots or len(pivots) < 4:
+        return {"label": None, "matches": []}
+
+    matches: List[WaveLabel] = []
+
+    # --- Scan IMPULSE windows (6 pivots) ---
+    if len(pivots) >= 6:
+        for i in range(0, len(pivots) - 6 + 1):
+            window = pivots[i : i + 6]
+
+            okL, reasonsL = validate_impulse(window, "LONG")
+            if okL:
+                matches.append(
+                    WaveLabel(
+                        pattern="IMPULSE_LONG",
+                        direction="LONG",
+                        start_index=i,
+                        end_index=i + 5,
+                        pivot_count=6,
+                        confidence=_score_from_reasons(85.0, reasonsL),
+                        reasons=reasonsL,
+                        pivots=window,
+                    )
+                )
+
+            okS, reasonsS = validate_impulse(window, "SHORT")
+            if okS:
+                matches.append(
+                    WaveLabel(
+                        pattern="IMPULSE_SHORT",
+                        direction="SHORT",
+                        start_index=i,
+                        end_index=i + 5,
+                        pivot_count=6,
+                        confidence=_score_from_reasons(85.0, reasonsS),
+                        reasons=reasonsS,
+                        pivots=window,
+                    )
+                )
+
+    # --- Scan ABC windows (4 pivots) ---
+    for i in range(0, len(pivots) - 4 + 1):
+        window = pivots[i : i + 4]
+
+        okD, reasonsD = validate_abc(window, "DOWN")
+        if okD:
+            matches.append(
+                WaveLabel(
+                    pattern="ABC_DOWN",
+                    direction="SHORT",
+                    start_index=i,
+                    end_index=i + 3,
+                    pivot_count=4,
+                    confidence=_score_from_reasons(65.0, reasonsD),
+                    reasons=reasonsD,
+                    pivots=window,
+                )
+            )
+
+        okU, reasonsU = validate_abc(window, "UP")
+        if okU:
+            matches.append(
+                WaveLabel(
+                    pattern="ABC_UP",
+                    direction="LONG",
+                    start_index=i,
+                    end_index=i + 3,
+                    pivot_count=4,
+                    confidence=_score_from_reasons(65.0, reasonsU),
+                    reasons=reasonsU,
+                    pivots=window,
+                )
+            )
+
+    if not matches:
+        return {"label": None, "matches": []}
+
+    # เลือก "จบล่าสุด" ก่อน (end_index มากสุด) แล้วค่อยตัดสินด้วย confidence
+    matches.sort(key=lambda m: (m.end_index, m.confidence), reverse=True)
+    best = matches[0]
+
+    # ทำผลลัพธ์ให้อ่านง่าย
+    label = {
+        "pattern": best.pattern,
+        "direction": best.direction,
+        "start_pivot_i": best.start_index,
+        "end_pivot_i": best.end_index,
+        "pivot_count": best.pivot_count,
+        "confidence": round(float(best.confidence), 1),
+        "reasons": best.reasons,
+        # ✅ ส่ง pivot prices มาด้วย (ย่อ)
+        "pivots": [
+    {
+        "index": int(p.get("index") or 0),
+        "type": p.get("type"),
+        "price": float(p.get("price") or 0),
+    }
+    for p in (best.pivots or [])
+],
+    }
+
+    return {"label": label, "matches": matches}
+
+===== app/analysis/wave_rules.py =====
+from typing import Dict, List, Tuple
+from app.analysis.fib import fib_retracement, fib_extension, fib_zone_match
+
+
+def _is_alternating_types(points: List[Dict]) -> bool:
+    """Ensure pivot types alternate L/H/L/H... or H/L/H/L..."""
+    if len(points) < 2:
+        return False
+    for i in range(1, len(points)):
+        if points[i]["type"] == points[i - 1]["type"]:
+            return False
+    return True
+
+
+def _price(points: List[Dict], i: int) -> float:
+    return float(points[i]["price"])
+
+
+def validate_impulse(points: List[Dict], direction: str) -> Tuple[bool, List[str]]:
+    """
+    Validate Elliott Impulse 1-5 using 6 pivots (0..5) representing:
+    LONG  : L0-H1-L2-H3-L4-H5
+    SHORT : H0-L1-H2-L3-H4-L5
+
+    direction: "LONG" or "SHORT"
+    Returns (pass, reasons)
+    """
+    reasons: List[str] = []
+    direction = (direction or "").upper().strip()
+
+    if len(points) != 6:
+        return False, ["Impulse ต้องใช้ pivot 6 จุด (0..5)"]
+
+    if not _is_alternating_types(points):
+        return False, ["ชนิด pivot ไม่สลับ H/L ต่อเนื่อง"]
+
+    # Assign pivots
+    p0, p1, p2, p3, p4, p5 = points
+
+    if direction == "LONG":
+        expected = ["L", "H", "L", "H", "L", "H"]
+    elif direction == "SHORT":
+        expected = ["H", "L", "H", "L", "H", "L"]
+    else:
+        return False, ["direction ต้องเป็น LONG หรือ SHORT"]
+
+    if [p["type"] for p in points] != expected:
+        return False, [f"Impulse {direction} ต้องเป็น pattern {''.join(expected)}"]
+
+    # Rule 1: Wave 2 must not retrace beyond start of Wave 1
+    # LONG: p2 must be above p0
+    # SHORT: p2 must be below p0
+    if direction == "LONG":
+        if _price(points, 2) <= _price(points, 0):
+            reasons.append("ผิดกฎ: Wave2 หลุดจุดเริ่ม Wave1 (invalid)")
+    else:
+        if _price(points, 2) >= _price(points, 0):
+            reasons.append("ผิดกฎ: Wave2 หลุดจุดเริ่ม Wave1 (invalid)")
+
+    # Rule 2: Wave 3 must not be the shortest among 1,3,5
+    # Measure wave lengths by absolute price move
+    w1 = abs(_price(points, 1) - _price(points, 0))
+    w3 = abs(_price(points, 3) - _price(points, 2))
+    w5 = abs(_price(points, 5) - _price(points, 4))
+
+    if w3 <= min(w1, w5):
+        reasons.append("ผิดกฎ: Wave3 สั้นสุด (invalid)")
+
+    # Rule 3: Wave 4 must not overlap Wave 1 (classic impulse)
+    # LONG: wave4 low (p4) must be above wave1 high (p1)
+    # SHORT: wave4 high (p4) must be below wave1 low (p1)
+    if direction == "LONG":
+        if _price(points, 4) <= _price(points, 1):
+            reasons.append("ผิดกฎ: Wave4 overlap Wave1 (invalid)")
+    else:
+        if _price(points, 4) >= _price(points, 1):
+            reasons.append("ผิดกฎ: Wave4 overlap Wave1 (invalid)")
+
+    # ---- Fibonacci validation ----
+    # Wave2 retracement (ต้องกันหารศูนย์)
+    if direction == "LONG":
+        wave1_len = _price(points, 1) - _price(points, 0)
+    else:
+        wave1_len = _price(points, 0) - _price(points, 1)
+
+    if wave1_len == 0:
+        reasons.append("Wave1 length = 0 (คำนวณ Fib ไม่ได้)")
+    else:
+        wave2_retrace = fib_retracement(_price(points, 0), _price(points, 1), _price(points, 2))
+        if wave2_retrace is None or not fib_zone_match(wave2_retrace):
+            reasons.append("Wave2 retrace ไม่อยู่ในช่วง 0.382–0.786")
+
+        # Wave3 extension
+        wave3_targets = fib_extension(_price(points, 0), _price(points, 1), _price(points, 2))
+        wave3_ext = w3 / abs(wave1_len)
+        if wave3_ext < 1.0:
+            reasons.append("Wave3 extension < 1.0 (อ่อนเกิน)")
+
+    ok = len(reasons) == 0
+    return ok, reasons
+
+
+def validate_abc(points: List[Dict], direction: str) -> Tuple[bool, List[str]]:
+    """
+    Basic ABC correction validation using 4 pivots (0..3):
+    For bearish correction after uptrend (down A, up B, down C) etc.
+    เราเช็คแค่ pattern + ความต่อเนื่องก่อน (ไม่ลงลึกชนิด zigzag/flat/triangle ในไฟล์นี้)
+
+    direction:
+      - "DOWN" = A ลง, B ขึ้น, C ลง (L/H/L pattern end)
+      - "UP"   = A ขึ้น, B ลง, C ขึ้น
+    """
+    reasons: List[str] = []
+    direction = (direction or "").upper().strip()
+
+    if len(points) != 4:
+        return False, ["ABC ต้องใช้ pivot 4 จุด (0..3)"]
+
+    if not _is_alternating_types(points):
+        return False, ["ชนิด pivot ไม่สลับ H/L ต่อเนื่อง"]
+
+    p0, p1, p2, p3 = points
+
+    if direction == "DOWN":
+        # H0-L1-H2-L3
+        expected = ["H", "L", "H", "L"]
+        if [p["type"] for p in points] != expected:
+            return False, [f"ABC DOWN ต้องเป็น pattern {''.join(expected)}"]
+        # C should make a lower low than A (often), allow equal with tolerance later
+        if _price(points, 3) >= _price(points, 1):
+            reasons.append("โครงสร้างไม่ชัด: C ไม่ทำ low ต่ำกว่า A (confidence ต่ำ)")
+    elif direction == "UP":
+        # L0-H1-L2-H3
+        expected = ["L", "H", "L", "H"]
+        if [p["type"] for p in points] != expected:
+            return False, [f"ABC UP ต้องเป็น pattern {''.join(expected)}"]
+        if _price(points, 3) <= _price(points, 1):
+            reasons.append("โครงสร้างไม่ชัด: C ไม่ทำ high สูงกว่า A (confidence ต่ำ)")
+    else:
+        return False, ["direction ต้องเป็น UP หรือ DOWN"]
+
+    # ABC ผ่านได้แม้ confidence ต่ำ (ให้ scoring ไปจัดใน wave_scenarios)
+
+    # ---- ABC Fibonacci classification (basic) ----
+    # ใช้ความยาว A และตำแหน่ง B เทียบ fib retrace
+    a_len = abs(_price(points, 1) - _price(points, 0))
+    if a_len == 0:
+        reasons.append("Wave A length = 0 (คำนวณ Fib ไม่ได้)")
+        return True, reasons
+
+    # B retrace ratio จากจบ A กลับไปทาง A
+    # DOWN: A = H0->L1, B = L1->H2
+    # UP  : A = L0->H1, B = H1->L2
+    b_retrace = abs((_price(points, 2) - _price(points, 1)) / a_len)
+
+    # Classify แบบพื้นฐาน
+    # Zigzag: B มัก retrace ~0.382–0.618
+    # Flat:   B มัก retrace >= 0.8 (ใกล้ 0.9–1.0)
+    if 0.382 <= b_retrace <= 0.618:
+        reasons.append("ABC: คล้าย Zigzag (B retrace 0.382–0.618)")
+    elif b_retrace >= 0.8:
+        reasons.append("ABC: คล้าย Flat (B retrace >= 0.8)")
+    else:
+        reasons.append("ABC: B retrace ไม่ชัด (Zigzag/Flat ไม่ชัด)")
+
+    # C extension (เทียบกับ A)
+    c_len = abs(_price(points, 3) - _price(points, 2))
+    c_ext = c_len / a_len
+    if c_ext < 1.0:
+        reasons.append("ABC: Wave C สั้นกว่า A (อ่อน)")
+    elif c_ext >= 1.618:
+        reasons.append("ABC: Wave C ยืดแรง (>=1.618)")
+    return True, reasons
+
+===== app/analysis/wave_scenarios.py =====
+from typing import List, Dict
+from app.analysis.wave_rules import validate_impulse, validate_abc
+
+
+def score_scenario(base_score, warnings, macro_trend, rsi14, volume_spike, direction):
+    score = float(base_score)
+
+    # warning penalty
+    score -= len(warnings) * 4
+
+    # Trend bonus/penalty
+    mt = (macro_trend or "NEUTRAL").upper()
+    if mt == "NEUTRAL":
+        score -= 2
+    if mt in ("BULL", "BEAR"):
+        score += 4
+
+    # RSI bonus
+    direction = (direction or "").upper()
+    if direction == "LONG":
+        if rsi14 >= 60:
+            score += 4
+        elif rsi14 >= 55:
+            score += 2
+    elif direction == "SHORT":
+        if rsi14 <= 40:
+            score += 4
+        elif rsi14 <= 45:
+            score += 2
+
+    # Volume spike bonus
+    if volume_spike:
+        score += 5
+
+    return max(min(score, 100), 1)
+
+def normalize_scores(scenarios: List[Dict]) -> List[Dict]:
+    total = sum(s["score"] for s in scenarios) or 1.0
+    for s in scenarios:
+        s["relative_score"] = round((s["score"] / total) * 100, 1)
+        s["probability"] = s["relative_score"]  # backward compat
+        s["confidence"] = round(float(s["score"]), 1)
+    return scenarios
+
+def build_scenarios(
+    pivots: List[Dict],
+    macro_trend: str = "NEUTRAL",
+    rsi14: float = 50.0,
+    volume_spike: bool = False
+) -> List[Dict]:
+    scenarios: List[Dict] = []
+
+    # Scenario 1: Impulse LONG
+    if len(pivots) >= 6:
+        last6 = pivots[-6:]
+        ok, warnings = validate_impulse(last6, "LONG")
+        if ok:
+            scenarios.append({
+                "type": "IMPULSE_LONG",
+                "phase": "Wave 5 or continuation",
+                "direction": "LONG",
+                "score": score_scenario(85, warnings, macro_trend, rsi14, volume_spike, direction="LONG"),
+                "reasons": warnings,
+                "pivots": last6,
+            })
+
+    # Scenario 2: Impulse SHORT
+    if len(pivots) >= 6:
+        last6 = pivots[-6:]
+        ok, warnings = validate_impulse(last6, "SHORT")
+        if ok:
+            scenarios.append({
+                "type": "IMPULSE_SHORT",
+                "phase": "Wave 5 or continuation",
+                "direction": "SHORT",
+                "score": score_scenario(85, warnings, macro_trend, rsi14, volume_spike, direction="SHORT"),
+                "reasons": warnings,
+                "pivots": last6,
+            })
+
+    # Scenario 3: ABC Correction
+    if len(pivots) >= 4:
+        last4 = pivots[-4:]
+
+        ok_down, warnings_down = validate_abc(last4, "DOWN")
+        if ok_down:
+            scenarios.append({
+                "type": "ABC_DOWN",
+                "phase": "Wave C ลง",
+                "direction": "SHORT",
+                "score": score_scenario(65, warnings_down, macro_trend, rsi14, volume_spike, direction="SHORT"),
+                "reasons": warnings_down,
+                "pivots": last4,
+            })
+
+        ok_up, warnings_up = validate_abc(last4, "UP")
+        if ok_up:
+            scenarios.append({
+                "type": "ABC_UP",
+                "phase": "Wave C ขึ้น",
+                "direction": "LONG",
+                "score": score_scenario(65, warnings_up, macro_trend, rsi14, volume_spike, direction="LONG"),
+                "reasons": warnings_up,
+                "pivots": last4,
+            })
+
+    # ✅ FIX: ถ้าไม่มี scenario แต่มี pivots พอแล้ว -> สร้าง fallback ขั้นต่ำ
+    # เพื่อไม่ให้ scenarios=0 (ให้ระบบไปตัด READY/BLOCKED ใน wave_engine แทน)
+    if not scenarios and len(pivots) >= 4:
+        last4 = pivots[-4:]
+        fb_reasons = ["fallback: rules not satisfied yet (keep watching)"]
+
+        # ✅ FIX: ลดคะแนน fallback ให้ต่ำกว่า threshold ทุกกรณี (watchlist only)
+        scenarios.append({
+            "type": "ABC_UP",
+            "phase": "Fallback (watchlist only)",
+            "direction": "LONG",
+            "score": score_scenario(
+                30,
+                fb_reasons,
+                macro_trend,
+                rsi14,
+                volume_spike,
+                "LONG",
+            ),
+            "reasons": fb_reasons,
+            "pivots": last4,
+            "is_fallback": True,
+        })
+
+        scenarios.append({
+            "type": "ABC_DOWN",
+            "phase": "Fallback (watchlist only)",
+            "direction": "SHORT",
+            "score": score_scenario(
+                30,
+                fb_reasons,
+                macro_trend,
+                rsi14,
+                volume_spike,
+                "SHORT",
+            ),
+            "reasons": fb_reasons,
+            "pivots": last4,
+            "is_fallback": True,
+        })
+
+    if not scenarios:
+        return []
+
+    scenarios.sort(key=lambda x: x["score"], reverse=True)
+    scenarios = scenarios[:3]
+    return normalize_scores(scenarios)
+===== app/analysis/zones.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+
+from app.analysis.pivot import find_fractal_pivots, filter_pivots
+
+
+@dataclass
+class Zone:
+    kind: str            # "SR"
+    level: float         # center price
+    low: float           # zone low
+    high: float          # zone high
+    touches: int         # number of hits clustered
+    side: str            # "SUPPORT" or "RESIST"
+    notes: str = ""
+
+
+def _safe_float(x, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _merge_clusters(levels: List[float], tol_pct: float) -> List[List[float]]:
+    """
+    cluster ราคาที่อยู่ใกล้กันภายใน tol_pct ของ level
+    ใช้ center ของ cluster แรกเป็น anchor เพื่อป้องกัน cluster drift
+    """
+    if not levels:
+        return []
+    levels = sorted(float(x) for x in levels)
+    clusters: List[List[float]] = [[levels[0]]]
+    # FIX: เก็บ anchor (center เริ่มต้น) แยกต่างหาก
+    anchors: List[float] = [levels[0]]
+
+    for v in levels[1:]:
+        anchor = anchors[-1]
+        tol = abs(anchor) * (tol_pct / 100.0)
+        if abs(v - anchor) <= tol:
+            clusters[-1].append(v)
+        else:
+            clusters.append([v])
+            anchors.append(v)
+
+    return clusters
+
+
+def build_zones_from_pivots(
+    df: pd.DataFrame,
+    min_pct_move: float = 1.5,
+    tol_pct: float = 0.35,
+    min_touches: int = 2,
+    max_zones: int = 8,
+) -> List[Dict]:
+    """
+    - หา pivots จาก fractal
+    - เอา pivot prices มาคลัสเตอร์เป็นโซน
+    - โซนที่ touches สูงจะสำคัญกว่า
+    """
+    if df is None or len(df) < 50:
+        return []
+
+    close = _safe_float(df["close"].iloc[-1], 0.0)
+
+    pivots = find_fractal_pivots(df, left=2, right=2)
+    pivots = filter_pivots(pivots, min_pct_move=min_pct_move)
+
+    highs = [float(p["price"]) for p in pivots if p.get("type") == "H"]
+    lows = [float(p["price"]) for p in pivots if p.get("type") == "L"]
+
+    high_clusters = _merge_clusters(highs, tol_pct=tol_pct)
+    low_clusters = _merge_clusters(lows, tol_pct=tol_pct)
+
+    zones: List[Zone] = []
+
+    def _cluster_to_zone(cluster: List[float], side: str) -> Optional[Zone]:
+        if not cluster or len(cluster) < min_touches:
+            return None
+
+        center = sum(cluster) / len(cluster)
+        # FIX: ใช้ lo/hi ตรง ๆ แทนการคำนวณซ้ำจาก spread
+        lo = min(cluster)
+        hi = max(cluster)
+        # เผื่อ cluster มีแค่ 1 ค่า (กรณีผ่าน min_touches=1) ให้มี spread เล็กน้อย
+        if hi == lo:
+            margin = abs(center) * 0.0005
+            lo = center - margin
+            hi = center + margin
+
+        return Zone(
+            kind="SR",
+            level=round(center, 6),
+            low=round(lo, 6),
+            high=round(hi, 6),
+            touches=len(cluster),
+            side=side,
+            notes=f"cluster[{len(cluster)}]",
+        )
+
+    for c in high_clusters:
+        z = _cluster_to_zone(c, side="RESIST")
+        if z:
+            zones.append(z)
+
+    for c in low_clusters:
+        z = _cluster_to_zone(c, side="SUPPORT")
+        if z:
+            zones.append(z)
+
+    def _score(z: Zone) -> Tuple[int, float]:
+        dist = abs(float(z.level) - close) if close else 1e9
+        return (z.touches, -dist)
+
+    zones.sort(key=_score, reverse=True)
+    zones = zones[:max_zones]
+
+    return [z.__dict__ for z in zones]
+
+
+def nearest_support_resist(zones: list, price: float) -> dict:
+    """
+    คืน SR ใกล้สุดใต้/เหนือราคา
+    ไม่เชื่อ side เดิม — คำนวณใหม่จากตำแหน่งราคา
+    """
+    price = float(price)
+
+    below = []
+    above = []
+
+    for z in (zones or []):
+        lvl = float(z.get("level", 0) or 0)
+        # FIX: strict comparison เพื่อไม่ให้ level เดียวกับ price
+        # ปรากฏในทั้ง support และ resist พร้อมกัน
+        if lvl < price:
+            below.append(z)
+        elif lvl > price:
+            above.append(z)
+
+    below.sort(key=lambda z: abs(float(z.get("level", 0) or 0) - price))
+    above.sort(key=lambda z: abs(float(z.get("level", 0) or 0) - price))
+
+    sup = dict(below[0]) if below else None
+    res = dict(above[0]) if above else None
+
+    if sup:
+        sup["side"] = "SUPPORT"
+    if res:
+        res["side"] = "RESIST"
+
+    return {
+        "support": sup,
+        "resist": res,
+    }
+===== app/backtest/__init__.py =====
+
+===== app/backtest/backtest_runner.py =====
+from __future__ import annotations
+
+import logging
+from typing import Dict, List, Optional
+from collections import Counter
+
+import pandas as pd
+
+from app.data.binance_fetcher import fetch_ohlcv, drop_unclosed_candle
+from app.analysis.pivot import find_fractal_pivots, filter_pivots
+from app.analysis.wave_scenarios import build_scenarios
+from app.risk.risk_manager import build_trade_plan
+from app.indicators.ema import add_ema
+from app.indicators.rsi import add_rsi
+from app.indicators.atr import add_atr
+from app.indicators.volume import add_volume_ma, volume_spike
+from app.indicators.trend_filter import trend_filter_ema, allow_direction
+from app.analysis.context_gate import apply_context_gate
+from app.analysis.market_regime import detect_market_regime
+from app.analysis.macro_bias import compute_macro_bias
+from app.config.wave_settings import MIN_CONFIDENCE_BACKTEST, ABC_CONFIRM_BUFFER
+
+logger = logging.getLogger(__name__)
+
+# ---- constants ----
+_START_BAR = 250
+_EMPTY_BUCKETS = {
+    "conf>=60": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
+    "conf>=70": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
+    "conf>=80": {"trades": 0, "wins": 0, "losses": 0, "open": 0, "winrate": 0.0},
+}
+
+# (optional) เก็บสถิติ invalid reason แบบ global ถ้าต้องการดูรวม
+INVALID_REASONS = Counter()
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def _prepare_df(symbol: str, interval: str, limit: int) -> Optional[pd.DataFrame]:
+    """
+    โหลดจาก SQLite (data/market.db) ก่อน
+    ถ้าไม่มีข้อมูลพอ ค่อย fallback ไป fetch_ohlcv เดิม
+    """
+    # --- 1) try sqlite first ---
+    try:
+        import sqlite3
+
+        con = sqlite3.connect("data/market.db")
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT ts, open, high, low, close, volume
+            FROM ohlcv
+            WHERE symbol=? AND timeframe=?
+            ORDER BY ts DESC
+            LIMIT ?
+            """,
+            (symbol, interval, int(limit)),
+        )
+        rows = cur.fetchall()
+        con.close()
+
+        if rows and len(rows) >= _START_BAR:
+            rows = list(reversed(rows))  # oldest -> newest
+            df = pd.DataFrame(
+                rows,
+                columns=["ts", "open", "high", "low", "close", "volume"],
+            )
+            df["open_time"] = pd.to_datetime(df["ts"], unit="s", utc=True)
+            df = df[["open_time", "open", "high", "low", "close", "volume"]].copy()
+
+            # ensure float
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = df[col].astype(float)
+
+            # add indicators
+            df = add_ema(df, lengths=(50, 200))
+            df = add_rsi(df, length=14)
+            df = add_atr(df, length=14)
+            df = add_volume_ma(df, length=20)
+            return df
+
+    except Exception as e:
+        logger.warning(f"[{symbol}] sqlite load failed -> fallback fetch ({e})")
+
+    # --- 2) fallback: old remote fetch ---
+    df = fetch_ohlcv(symbol, interval=interval, limit=limit)
+    df = drop_unclosed_candle(df)
+    if df is None or len(df) < _START_BAR:
+        return None
+    df = add_ema(df, lengths=(50, 200))
+    df = add_rsi(df, length=14)
+    df = add_atr(df, length=14)
+    df = add_volume_ma(df, length=20)
+    return df
+
+
+def _simulate_one_trade(
+    df: pd.DataFrame,
+    start_i: int,
+    direction: str,
+    entry: float,
+    sl: float,
+    tp1: float,
+    tp2: float,
+    tp3: float,
+) -> Dict:
+    """
+    เดินแท่งจาก start_i ไปข้างหน้า จนเจอ SL หรือ TP3
+    - เช็ค SL ก่อนเสมอ (conservative)
+    - ถ้าแตะ TP1 ก่อน → ย้าย SL ไป breakeven (entry)
+    - ถ้าโดน SL หลังจากแตะ TP1 → result = BE
+    - ถ้าครบ df โดยไม่เจอ SL/TP → OPEN
+    """
+    tp1_hit = False
+
+    for i in range(start_i, len(df)):
+        high = float(df["high"].iloc[i])
+        low = float(df["low"].iloc[i])
+
+        if direction == "LONG":
+            # เมื่อถึง TP1 → ย้าย SL ไป breakeven
+            if (not tp1_hit) and (high >= tp1):
+                tp1_hit = True
+                sl = entry
+
+            # เช็ค SL ก่อนเสมอ
+            if low <= sl:
+                result = "BE" if tp1_hit else "LOSS"
+                return {"result": result, "exit": sl, "bars": i - start_i}
+
+            if high >= tp3:
+                return {"result": "WIN", "exit": tp3, "bars": i - start_i}
+            
+        else:  # SHORT
+            # เมื่อถึง TP1 → ย้าย SL ไป breakeven
+            if (not tp1_hit) and (low <= tp1):
+                tp1_hit = True
+                sl = entry
+
+            # เช็ค SL ก่อนเสมอ
+            if high >= sl:
+                result = "BE" if tp1_hit else "LOSS"
+                return {"result": result, "exit": sl, "bars": i - start_i}
+
+            if low <= tp3:
+                return {"result": "WIN", "exit": tp3, "bars": i - start_i}
+
+    return {"result": "OPEN", "exit": None, "bars": len(df) - start_i}
+
+
+def _get_scenarios(sub: pd.DataFrame, macro_trend: str, rsi14: float, is_vol_spike: bool) -> List[Dict]:
+    """pivot → build_scenarios → context_gate → คืน gated scenarios"""
+    pivots = find_fractal_pivots(sub)
+    pivots = filter_pivots(pivots, min_pct_move=1.5)
+    if len(pivots) < 4:
+        return []
+
+    scenarios = build_scenarios(
+        pivots,
+        macro_trend=macro_trend,
+        rsi14=rsi14,
+        volume_spike=is_vol_spike,
+    )
+    if not scenarios:
+        return []
+
+    regime = detect_market_regime(sub)
+    macro_bias = compute_macro_bias(regime, rsi14=rsi14)
+
+    gated: List[Dict] = []
+    for sc in scenarios:
+        r = apply_context_gate(sc, macro_bias=macro_bias, min_confidence=MIN_CONFIDENCE_BACKTEST)
+        if r:
+            gated.append(r)
+
+    return gated
+
+
+def _r_multiple(direction: str, entry: float, sl: float, tp3: float, result: str) -> float:
+    """คิดผลเป็นหน่วย R: LOSS=-1R, WIN=+RR, BE=0, OPEN=0"""
+    risk = abs(entry - sl)
+    if risk <= 0:
+        return 0.0
+    rr_tp3 = abs(tp3 - entry) / risk
+    if result == "LOSS":
+        return -1.0
+    if result == "WIN":
+        return float(rr_tp3)
+    if result == "BE":
+        return 0.0
+    return 0.0
+
+
+def _bucket_stats(trades: List[Dict], min_conf: float) -> Dict:
+    bucket = [t for t in trades if float(t.get("confidence") or 0) >= min_conf]
+    w = sum(1 for t in bucket if t["result"] == "WIN")
+    l = sum(1 for t in bucket if t["result"] == "LOSS")
+    o = sum(1 for t in bucket if t["result"] == "OPEN")
+    closed = w + l
+    wr = round((w / closed) * 100, 2) if closed > 0 else 0.0
+    return {"trades": len(bucket), "wins": w, "losses": l, "open": o, "winrate": wr}
+
+
+def _safe_entry_time(t: Dict):
+    """sort key ที่กัน NaT/None ไม่ให้ TypeError"""
+    v = t.get("entry_time")
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return pd.Timestamp.min.tz_localize("UTC")
+    if isinstance(v, pd.Timestamp) and pd.isna(v):
+        return pd.Timestamp.min.tz_localize("UTC")
+    return v
+
+
+# ---------------------------------------------------------------------------
+# backtest_symbol
+# ---------------------------------------------------------------------------
+
+def backtest_symbol(
+    symbol: str,
+    interval: str = "1d",
+    limit: int = 1000,
+    min_pct_move: float = 1.5,
+    min_rr: float = 0.0,
+) -> Dict:
+    """
+    Backtest แบบง่าย (summary stats เท่านั้น):
+    - ทุกแท่งที่ผ่าน filter → เปิด 1 เทรด (ไม่ซ้อน)
+    - จบเมื่อ SL หรือ TP3
+    """
+    invalid_reasons = Counter()
+
+    _empty = {
+        "symbol": symbol,
+        "trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "open": 0,
+        "winrate": 0.0,
+        "conf_min": 0.0,
+        "conf_max": 0.0,
+        "conf_avg": 0.0,
+        "buckets": _EMPTY_BUCKETS,
+    }
+
+    df = _prepare_df(symbol, interval, limit)
+    if df is None:
+        return _empty
+
+    trades: List[Dict] = []
+    in_position = False
+    skip_until_bar = 0
+
+    # align default min_rr with live (wave_settings.MIN_RR)
+    if not min_rr or float(min_rr) <= 0:
+        try:
+            from app.config.wave_settings import MIN_RR as _LIVE_MIN_RR
+            min_rr = float(_LIVE_MIN_RR) if _LIVE_MIN_RR else 2.0
+        except Exception:
+            min_rr = 2.0
+
+    for i in range(_START_BAR, len(df) - 1):
+        if in_position or i < skip_until_bar:
+            continue
+
+        sub = df.iloc[: i + 1].copy()
+        macro_trend = trend_filter_ema(sub)
+        rsi14 = float(sub["rsi14"].iloc[-1])
+        is_vol_spike = bool(volume_spike(sub, length=20, multiplier=1.5))
+        last_close = float(sub["close"].iloc[-1])
+
+        # --- HARD Compression Gate (ATR14 < ATR14_MA50) ---
+        atr = float(sub["atr14"].iloc[-1])
+        atr_ma50 = float(sub["atr14"].rolling(50).mean().iloc[-1]) if len(sub) >= 50 else 0.0
+        if atr_ma50 > 0 and atr >= atr_ma50:
+            continue
+
+        scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
+        if not scenarios:
+            continue
+
+        sc = scenarios[0]
+        direction = sc["direction"]
+
+        # NOTE: backtest_runner ต้องไม่เพิ่ม filter ที่ live ไม่มี
+
+        trade_plan = build_trade_plan(sc, current_price=last_close, min_rr=min_rr)
+        if not trade_plan.get("valid"):
+            invalid_reasons[str(trade_plan.get("reason") or "NO_REASON")] += 1
+            continue
+
+        entry = float(trade_plan["entry"])
+
+        # trigger ให้เหมือน live:
+        # - ABC_UP/ABC_DOWN: trigger ทันที
+        # - อื่นๆ: breakout ผ่าน entry
+        stype = (sc.get("type") or "").upper()
+        if stype in ("ABC_UP", "ABC_DOWN"):
+            triggered = True
+        else:
+            triggered = (
+                (direction == "LONG" and last_close > entry)
+                or (direction == "SHORT" and last_close < entry)
+            )
+        if not triggered:
+            continue
+
+        in_position = True
+
+        sim = _simulate_one_trade(
+            df=df,
+            start_i=i + 1,
+            direction=direction,
+            entry=entry,
+            sl=float(trade_plan["sl"]),
+            tp1=float(trade_plan["tp1"]),
+            tp2=float(trade_plan["tp2"]),
+            tp3=float(trade_plan["tp3"]),
+        )
+
+        trades.append({
+            "trade_plan": trade_plan,
+            "symbol": symbol,
+            "bar_index": i,
+            "direction": direction,
+            "entry": entry,
+            "sl": float(trade_plan["sl"]),
+            "tp3": float(trade_plan["tp3"]),
+            "confidence": float(sc.get("confidence") or sc.get("score") or 0),
+            "result": sim["result"],
+            "bars_held": sim["bars"],
+        })
+
+        logger.debug(
+            "bar=%d dir=%s conf=%.1f result=%s",
+            i, direction, trades[-1]["confidence"], sim["result"],
+        )
+
+        if sim["result"] in ("WIN", "LOSS", "BE"):
+            in_position = False
+        else:
+            skip_until_bar = (i + 1) + int(sim["bars"])
+
+    # (optional) รวม reason ไว้ดู
+    INVALID_REASONS.update(invalid_reasons)
+
+    wins = sum(1 for t in trades if t["result"] == "WIN")
+    losses = sum(1 for t in trades if t["result"] == "LOSS")
+    bes = sum(1 for t in trades if t["result"] == "BE")
+    opens = sum(1 for t in trades if t["result"] == "OPEN")
+    total_closed = wins + losses + bes
+    winrate = round((wins / total_closed) * 100, 2) if total_closed > 0 else 0.0
+
+    conf_values = [float(t.get("confidence") or 0) for t in trades]
+    conf_min = round(min(conf_values), 2) if conf_values else 0.0
+    conf_max = round(max(conf_values), 2) if conf_values else 0.0
+    conf_avg = round(sum(conf_values) / len(conf_values), 2) if conf_values else 0.0
+
+    return {
+        "symbol": symbol,
+        "trades": len(trades),
+        "wins": wins,
+        "losses": losses,
+        "be": bes,
+        "open": opens,
+        "winrate": winrate,
+        "conf_min": conf_min,
+        "conf_max": conf_max,
+        "conf_avg": conf_avg,
+        "buckets": {
+            "conf>=60": _bucket_stats(trades, 60),
+            "conf>=70": _bucket_stats(trades, 70),
+            "conf>=80": _bucket_stats(trades, 80),
+        },
+        "invalid_reasons": invalid_reasons,  # ✅ เพิ่มให้ดูได้
+    }
+
+
+# ---------------------------------------------------------------------------
+# backtest_symbol_trades
+# ---------------------------------------------------------------------------
+
+def backtest_symbol_trades(
+    symbol: str,
+    interval: str = "1d",
+    limit: int = 1000,
+    min_pct_move: float = 1.5,
+    min_rr: float = 0.0,
+    min_confidence: float = 0.0,
+) -> Dict:
+    """
+    เหมือน backtest_symbol แต่คืน trades list พร้อม entry/exit time + R multiple
+    ใช้สำหรับ portfolio_simulator
+    """
+    df = _prepare_df(symbol, interval, limit)
+    if df is None:
+        return {"symbol": symbol, "trades": []}
+
+    trades: List[Dict] = []
+    in_position = False
+    skip_until_bar = 0
+
+    # align default min_rr with live (wave_settings.MIN_RR)
+    if not min_rr or float(min_rr) <= 0:
+        try:
+            from app.config.wave_settings import MIN_RR as _LIVE_MIN_RR
+            min_rr = float(_LIVE_MIN_RR) if _LIVE_MIN_RR else 2.0
+        except Exception:
+            min_rr = 2.0
+
+    for i in range(_START_BAR, len(df) - 1):
+        if in_position or i < skip_until_bar:
+            continue
+
+        sub = df.iloc[: i + 1].copy()
+        macro_trend = trend_filter_ema(sub)
+        rsi14 = float(sub["rsi14"].iloc[-1])
+        is_vol_spike = bool(volume_spike(sub, length=20, multiplier=1.5))
+        last_close = float(sub["close"].iloc[-1])
+
+        # --- HARD Compression Gate (ATR14 < ATR14_MA50) ---
+        atr = float(sub["atr14"].iloc[-1])
+        atr_ma50 = float(sub["atr14"].rolling(50).mean().iloc[-1]) if len(sub) >= 50 else 0.0
+        if atr_ma50 > 0 and atr >= atr_ma50:
+            continue
+
+        scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
+        if not scenarios:
+            continue
+
+        sc = scenarios[0]
+        direction = sc["direction"]
+
+        # NOTE: backtest_runner ต้องไม่เพิ่ม filter ที่ live ไม่มี
+
+        conf = float(sc.get("confidence") or sc.get("score") or 0)
+        if conf < float(min_confidence):
+            continue
+
+        trade_plan = build_trade_plan(sc, current_price=last_close, min_rr=min_rr)
+        if not trade_plan.get("valid"):
+            continue
+
+        entry = float(trade_plan["entry"])
+
+        stype = (sc.get("type") or "").upper()
+        if stype in ("ABC_UP", "ABC_DOWN"):
+            triggered = True
+        else:
+            triggered = (
+                (direction == "LONG" and last_close > entry)
+                or (direction == "SHORT" and last_close < entry)
+            )
+        if not triggered:
+            continue
+
+        in_position = True
+        start_i = i + 1
+
+        sim = _simulate_one_trade(
+            df=df,
+            start_i=start_i,
+            direction=direction,
+            entry=entry,
+            sl=float(trade_plan["sl"]),
+            tp1=float(trade_plan["tp1"]),
+            tp2=float(trade_plan["tp2"]),
+            tp3=float(trade_plan["tp3"]),
+        )
+
+        # exit time
+        exit_index: Optional[int] = None
+        exit_time = None
+        if sim["result"] in ("WIN", "LOSS", "BE"):
+            exit_index = start_i + int(sim["bars"])
+            if 0 <= exit_index < len(df):
+                exit_time = df["open_time"].iloc[exit_index]
+
+        entry_time = df["open_time"].iloc[i]
+        r = _r_multiple(direction, entry, float(trade_plan["sl"]), float(trade_plan["tp3"]), sim["result"])
+
+        # --- persist CLOSED trade to SQLite (edge dataset) ---
+        if sim["result"] in ("WIN", "LOSS", "BE"):
+            try:
+                sqlite3 = __import__("sqlite3")
+                json = __import__("json")
+
+                def _ts_to_int(ts):
+                    if ts is None:
+                        return None
+                    try:
+                        return int(ts.timestamp())  # pandas Timestamp (tz-aware)
+                    except Exception:
+                        return None
+
+                meta = {
+                    "scenario_type": sc.get("type"),
+                    "macro_trend": macro_trend,
+                    "rsi14": rsi14,
+                    "vol_spike": is_vol_spike,
+                    "confidence": conf,
+                    "trade_plan": trade_plan,
+                }
+
+                con = sqlite3.connect("data/market.db")
+                cur = con.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO trades (
+                        symbol, timeframe, entry_ts, exit_ts, direction,
+                        entry, sl, tp1, tp2, tp3,
+                        result, r_multiple, meta_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        symbol,
+                        interval,
+                        _ts_to_int(entry_time),
+                        _ts_to_int(exit_time),
+                        direction,
+                        float(entry),
+                        float(trade_plan["sl"]),
+                        float(trade_plan["tp1"]),
+                        float(trade_plan["tp2"]),
+                        float(trade_plan["tp3"]),
+                        str(sim["result"]),
+                        float(r),
+                        json.dumps(meta, ensure_ascii=False),
+                    ),
+                )
+                con.commit()
+                con.close()
+
+            except Exception as e:
+                logger.warning(f"[{symbol}] sqlite insert trade failed: {e}")
+
+        trades.append({
+            "trade_plan": trade_plan,
+            "symbol": symbol,
+            "entry_index": i,
+            "entry_time": entry_time,
+            "exit_index": exit_index,
+            "exit_time": exit_time,
+            "direction": direction,
+            "confidence": conf,
+            "entry": entry,
+            "sl": float(trade_plan["sl"]),
+            "tp3": float(trade_plan["tp3"]),
+            "result": sim["result"],
+            "r_multiple": r,
+        })
+
+        if sim["result"] in ("WIN", "LOSS", "BE"):
+            in_position = False
+        else:
+            skip_until_bar = (i + 1) + int(sim["bars"])
+
+    return {"symbol": symbol, "trades": trades, "data": df}
+
+
+# ---------------------------------------------------------------------------
+# portfolio_simulator
+# ---------------------------------------------------------------------------
+
+def portfolio_simulator(
+    symbols: List[str],
+    interval: str = "1d",
+    limit: int = 1000,
+    min_pct_move: float = 1.5,
+    min_rr: float = 2.0,
+    min_confidence: float = 60.0,
+    return_trades_detail: bool = False,
+) -> Dict:
+    """
+    Portfolio simulator:
+    - รวมเทรดของทุกเหรียญ filtered ด้วย min_confidence
+    - sort ตาม entry_time (✅ FIX: กัน NaT crash)
+    - คิด equity R + Max Drawdown
+    """
+    all_trades: List[Dict] = []
+    # reset trades table each run (avoid accumulating rows across runs)
+    try:
+        import sqlite3
+        con = sqlite3.connect("data/market.db")
+        cur = con.cursor()
+        cur.execute("DELETE FROM trades")
+        con.commit()
+        con.close()
+    except Exception as e:
+        logger.warning(f"sqlite reset trades failed: {e}")
+
+    for s in symbols:
+        res = backtest_symbol_trades(
+            s,
+            interval=interval,
+            limit=limit,
+            min_pct_move=min_pct_move,
+            min_rr=min_rr,
+            min_confidence=min_confidence,
+        )
+        all_trades.extend(res["trades"])
+
+    all_trades.sort(key=_safe_entry_time)
+
+    closed = [t for t in all_trades if t["result"] in ("WIN", "LOSS", "BE")]
+    wins = sum(1 for t in closed if t["result"] == "WIN")
+    losses = sum(1 for t in closed if t["result"] == "LOSS")
+    bes = sum(1 for t in closed if t["result"] == "BE")    
+    total = len(closed)
+    winrate = round((wins / total) * 100, 2) if total > 0 else 0.0
+
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    curve: List[float] = []
+
+    for t in closed:
+        equity += float(t["r_multiple"])
+        peak = max(peak, equity)
+        dd = peak - equity
+        max_dd = max(max_dd, dd)
+        curve.append(equity)
+
+    return {
+        "symbols": symbols,
+        "min_confidence": float(min_confidence),
+        "trades": total,
+        "wins": wins,
+        "losses": losses,
+        "winrate": winrate,
+        "be": bes,
+        "equity_R": round(equity, 2),
+        "max_drawdown_R": round(max_dd, 2),
+        "trades_detail": closed if return_trades_detail else None,
+    }
+
+# ---------------------------------------------------------------------------
+# __main__
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    from app.config.wave_settings import SYMBOLS
+    symbols = SYMBOLS
+
+    res = portfolio_simulator(symbols, interval="4h", limit=1000, min_confidence=65)
+    print(res)
+===== app/backtest/live_mirror_bt.py =====
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+
+from app.config.wave_settings import BARS, TIMEFRAME
+from app.data.binance_fetcher import fetch_ohlcv, drop_unclosed_candle
+
+@dataclass
+class Trade:
+    symbol: str
+    direction: str
+    entry: float
+    sl: float
+    tp1: float
+    tp2: float
+    tp3: float
+    opened_at: pd.Timestamp
+    closed_at: pd.Timestamp
+    exit_price: float
+    result: str  # "WIN" | "LOSS" | "FLAT"
+    r_multiple: float
+
+def _r_multiple(direction: str, entry: float, sl: float, exit_price: float) -> float:
+    risk = abs(entry - sl)
+    if risk <= 0:
+        return 0.0
+    if direction.upper() == "LONG":
+        return (exit_price - entry) / risk
+    return (entry - exit_price) / risk
+
+def _simulate_trade_on_forward_bars(
+    df: pd.DataFrame,
+    i_open: int,
+    direction: str,
+    entry: float,
+    sl: float,
+    tp: float,
+) -> Tuple[int, float, str]:
+    """
+    Mirror live trade_executor.py:
+    - วาง STOP_MARKET (SL) + TAKE_PROFIT_MARKET (TP3) เท่านั้น
+    - ไม่มี partial close TP1/TP2
+    - SL ชนก่อนเสมอในแท่งเดียวกัน (conservative)
+    """
+    direction = direction.upper()
+
+    for j in range(i_open, len(df)):
+        hi = float(df["high"].iloc[j])
+        lo = float(df["low"].iloc[j])
+
+        if direction == "LONG":
+            if lo <= sl:
+                return j, sl, "LOSS"
+            if hi >= tp:
+                return j, tp, "WIN"
+        else:
+            if hi >= sl:
+                return j, sl, "LOSS"
+            if lo <= tp:
+                return j, tp, "WIN"
+
+    return len(df) - 1, float(df["close"].iloc[-1]), "FLAT"
+
+def _streaks(results: List[str]) -> Dict[str, int]:
+    best_win = best_loss = 0
+    cur_win = cur_loss = 0
+
+    for r in results:
+        if r == "WIN":
+            cur_win += 1
+            cur_loss = 0
+        elif r == "LOSS":
+            cur_loss += 1
+            cur_win = 0
+        else:
+            cur_win = 0
+            cur_loss = 0
+
+        best_win = max(best_win, cur_win)
+        best_loss = max(best_loss, cur_loss)
+
+    return {"max_win_streak": best_win, "max_loss_streak": best_loss}
+
+def _equity_and_dd_r(trades: List[Trade]) -> Dict[str, float]:
+    eq = 0.0
+    peak = 0.0
+    max_dd = 0.0
+
+    for t in trades:
+        eq += float(t.r_multiple)
+        if eq > peak:
+            peak = eq
+        dd = peak - eq
+        if dd > max_dd:
+            max_dd = dd
+
+    return {"equity_R": round(eq, 4), "max_dd_R": round(max_dd, 4)}
+
+def _coerce_ohlcv_types(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    need = {"open_time", "open", "high", "low", "close", "volume"}
+    missing = [c for c in sorted(need) if c not in df.columns]
+    if missing:
+        raise ValueError(f"CSV missing required columns: {missing}")
+
+    s = df["open_time"]
+    s_num = pd.to_numeric(s, errors="coerce")
+    if s_num.notna().all():
+        dt = pd.to_datetime(s_num.astype("int64"), unit="ms", utc=True)
+    else:
+        dt = pd.to_datetime(s, utc=True, errors="raise")
+
+    df["open_time"] = dt
+
+    for c in ("open", "high", "low", "close", "volume"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna(subset=["open_time", "open", "high", "low", "close"]).copy()
+    df = df.set_index("open_time", drop=False).sort_index()
+
+    return df
+
+def _load_df_from_csv(csv_path: str) -> Optional[pd.DataFrame]:
+    """
+    โหลดจาก CSV โดยไม่ cap limit
+    เพราะ CSV มีข้อมูลเท่าไหร่ ต้องใช้ทั้งหมด
+    เพื่อให้ MTF slice ณ bar i ได้ถูกต้อง
+    """
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
+    df = pd.read_csv(csv_path)
+    df = _coerce_ohlcv_types(df)
+    return drop_unclosed_candle(df)
+
+def _load_df_from_api(symbol: str, interval: str, limit: int) -> Optional[pd.DataFrame]:
+    df = fetch_ohlcv(symbol, interval=interval, limit=limit)
+    return drop_unclosed_candle(df)
+
+def _patch_live_for_offline(
+    sub_df: pd.DataFrame,
+    df_4h: Optional[pd.DataFrame],
+    df_1w: Optional[pd.DataFrame],
+) -> None:
+    """
+    Patch ทุก namespace ที่เรียก fetch_ohlcv ให้ใช้ข้อมูล historical ณ bar i
+
+    slice MTF ด้วย timestamp ป้องกัน lookahead bias
+    """
+    import app.analysis.wave_engine as we_mod
+    import app.analysis.multi_tf as mtf_mod
+    import app.data.binance_fetcher as bf_mod
+
+    current_ts = sub_df.index[-1]
+
+    def _patched_fetch(symbol, interval=TIMEFRAME, limit=BARS):
+        if interval == TIMEFRAME:
+            return sub_df.copy()
+
+        if interval == "4h":
+            if df_4h is not None and len(df_4h) > 0:
+                sliced = df_4h[df_4h.index <= current_ts].tail(int(limit)).copy()
+                return sliced if len(sliced) > 0 else pd.DataFrame()
+            return pd.DataFrame()
+
+        if interval == "1w":
+            if df_1w is not None and len(df_1w) > 0:
+                sliced = df_1w[df_1w.index <= current_ts].tail(int(limit)).copy()
+                return sliced if len(sliced) > 0 else pd.DataFrame()
+            return pd.DataFrame()
+
+        return pd.DataFrame()
+
+    we_mod.fetch_ohlcv = _patched_fetch
+    mtf_mod.fetch_ohlcv = _patched_fetch
+    bf_mod.fetch_ohlcv = _patched_fetch
+
+def run_symbol_bt(
+    symbol: str,
+    limit: int = BARS,
+    csv_path: Optional[str] = None,
+    csv_path_4h: Optional[str] = None,
+    csv_path_1w: Optional[str] = None,
+) -> Dict:
+
+    # โหลด 1D
+    if csv_path:
+        df = _load_df_from_csv(csv_path)
+        if df is not None and limit and len(df) > limit:
+            df = df.tail(limit).copy()
+    else:
+        df = _load_df_from_api(symbol, TIMEFRAME, limit)
+
+    if df is None or len(df) < 300:
+        return {"symbol": symbol, "trades": [], "summary": {"n": 0}}
+
+    # โหลด 4H — โหลดทั้งหมดจาก CSV ไม่ cap
+    df_4h: Optional[pd.DataFrame] = None
+    if csv_path_4h:
+        df_4h = _load_df_from_csv(csv_path_4h)
+        print(f"[MTF] 4H loaded: {len(df_4h) if df_4h is not None else 0} bars")
+    else:
+        print("[MTF] WARNING: --csv4h ไม่ได้ระบุ → h4_confirm=False ตลอด")
+
+    # โหลด 1W — โหลดทั้งหมดจาก CSV ไม่ cap
+    df_1w: Optional[pd.DataFrame] = None
+    if csv_path_1w:
+        df_1w = _load_df_from_csv(csv_path_1w)
+        print(f"[MTF] 1W loaded: {len(df_1w) if df_1w is not None else 0} bars")
+    else:
+        print("[MTF] WARNING: --csv1w ไม่ได้ระบุ → weekly_permit=True/True ตลอด")
+
+    from app.analysis.wave_engine import analyze_symbol as live_analyze_symbol
+
+    trades: List[Trade] = []
+
+    # --- debug counters (enable with env BT_DEBUG=1) ---
+    bt_debug = (os.getenv("BT_DEBUG", "") or "").lower() in ("1", "true", "yes")
+    dbg = {
+        "bars": 0,
+        "out_none": 0,
+        "no_scenarios": 0,
+        "sc_total": 0,
+        "sc_ready": 0,
+        "plan_allowed": 0,
+        "plan_triggered": 0,
+        "plan_valid": 0,
+        "trades": 0,
+    }
+
+    in_trade = False
+    skip_until = 0
+    window_len = int(limit) if limit else BARS
+
+    for i in range(250, len(df) - 2):
+        dbg["bars"] += 1
+
+        if in_trade or i < skip_until:
+            continue
+
+        start = max(0, (i + 1) - window_len)
+        sub = df.iloc[start : i + 1].copy()
+
+        _patch_live_for_offline(sub, df_4h, df_1w)
+
+        out = live_analyze_symbol(symbol)
+        if not out:
+            dbg["out_none"] += 1
+            continue
+
+        scenarios_list = (out.get("scenarios") or [])
+        if not scenarios_list:
+            dbg["no_scenarios"] += 1
+            continue
+
+        triggered_this_bar = False
+
+        for sc in scenarios_list:
+            if triggered_this_bar:
+                break
+
+            plan = (sc.get("trade_plan") or {})
+            dbg["sc_total"] += 1
+
+            if (sc.get("status") or "").upper() != "READY":
+                continue
+            dbg["sc_ready"] += 1
+
+            if not plan.get("allowed_to_trade"):
+                continue
+            dbg["plan_allowed"] += 1
+
+            # NOTE: อย่าเชื่อ plan.triggered จาก live แบบ 1D close-only
+            # เพราะ live ใช้ “ราคาปัจจุบัน” ที่สามารถแตะ entry intrabar ได้
+            # ใน backtest เราจำลอง trigger ด้วยแท่งถัดไป (i+1) แบบ conservative:
+            # - LONG: ถ้า high ของแท่งถัดไป >= entry → ถือว่า triggered
+            # - SHORT: ถ้า low  ของแท่งถัดไป <= entry → ถือว่า triggered
+            entry = plan.get("entry")
+            if entry is None:
+                continue
+            entry_f = float(entry)
+
+            next_hi = float(df["high"].iloc[i + 1])
+            next_lo = float(df["low"].iloc[i + 1])
+
+            direction_tmp = (sc.get("direction") or "").upper()
+            is_triggered = False
+            if direction_tmp == "LONG":
+                is_triggered = next_hi >= entry_f
+            elif direction_tmp == "SHORT":
+                is_triggered = next_lo <= entry_f
+
+            if not is_triggered:
+                continue
+            dbg["plan_triggered"] += 1
+
+            if not plan.get("valid"):
+                continue
+            dbg["plan_valid"] += 1
+
+            direction = (sc.get("direction") or "").upper()
+            if direction not in ("LONG", "SHORT"):
+                continue
+
+            sl  = plan.get("stop_loss")     or plan.get("sl")
+            tp3 = plan.get("take_profit_3") or plan.get("tp3")
+            tp1 = plan.get("take_profit_1") or plan.get("tp1")
+            tp2 = plan.get("take_profit_2") or plan.get("tp2")
+
+            if sl is None or tp3 is None:
+                continue
+
+            # ใช้ entry ตามแผน (mirror live) ไม่ใช่ open ของแท่งถัดไป
+            entry_px = float(entry_f)
+            sl_f     = float(sl)
+            tp3_f    = float(tp3)
+
+            j_close, exit_px, res = _simulate_trade_on_forward_bars(
+                df=df,
+                i_open=i + 1,
+                direction=direction,
+                entry=entry_px,
+                sl=sl_f,
+                tp=tp3_f,
+            )
+
+            r = _r_multiple(direction, entry_px, sl_f, float(exit_px))
+
+            trades.append(
+                Trade(
+                    symbol=symbol,
+                    direction=direction,
+                    entry=entry_px,
+                    sl=sl_f,
+                    tp1=float(tp1) if tp1 is not None else float("nan"),
+                    tp2=float(tp2) if tp2 is not None else float("nan"),
+                    tp3=tp3_f,
+                    opened_at=pd.to_datetime(df.index[i + 1]),
+                    closed_at=pd.to_datetime(df.index[j_close]),
+                    exit_price=float(exit_px),
+                    result=res,
+                    r_multiple=float(r),
+                )
+            )
+            dbg["trades"] += 1
+
+            triggered_this_bar = True
+            skip_until = j_close + 1
+
+    if not trades:
+        if bt_debug:
+            print(f"[BT_DEBUG] {symbol} debug: {dbg}")
+        return {"symbol": symbol, "trades": [], "summary": {"n": 0}}
+
+    results = [t.result for t in trades]
+    wins   = sum(1 for r in results if r == "WIN")
+    losses = sum(1 for r in results if r == "LOSS")
+    flats  = sum(1 for r in results if r == "FLAT")
+
+    total_r = sum(float(t.r_multiple) for t in trades)
+    streak  = _streaks(results)
+    eqdd    = _equity_and_dd_r(trades)
+
+    summary = {
+        "n": len(trades),
+        "wins": wins,
+        "losses": losses,
+        "flats": flats,
+        "winrate": round((wins / len(trades) * 100.0), 2) if trades else 0.0,
+        "total_R": round(total_r, 4),
+        **eqdd,
+        **streak,
+    }
+
+    if bt_debug:
+        print(f"[BT_DEBUG] {symbol} debug: {dbg}")
+
+    return {
+        "symbol": symbol,
+        "trades": [t.__dict__ for t in trades],
+        "summary": summary,
+    }
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--symbol", required=True)
+    ap.add_argument("--limit",  type=int, default=BARS)
+    ap.add_argument("--csv",    default="", help="path to 1D OHLCV csv")
+    ap.add_argument("--csv4h",  default="", help="path to 4H OHLCV csv")
+    ap.add_argument("--csv1w",  default="", help="path to 1W OHLCV csv")
+    ap.add_argument("--out",    default="", help="path to write trades csv")
+    args = ap.parse_args()
+
+    out = run_symbol_bt(
+        args.symbol,
+        limit=int(args.limit),
+        csv_path=args.csv.strip()   or None,
+        csv_path_4h=args.csv4h.strip() or None,
+        csv_path_1w=args.csv1w.strip() or None,
+    )
+
+    print(json.dumps(out["summary"], ensure_ascii=False, indent=2))
+
+    # เขียนไฟล์เสมอถ้าระบุ --out (แม้ไม่มีเทรด) เพื่อให้ตรวจ/อ่านไฟล์ได้
+    if args.out.strip():
+        # ถ้าไม่มีเทรด ให้เขียนเป็น CSV ว่างแต่มี header เพื่ออ่านด้วย pandas ได้เสมอ
+        cols = [
+            "symbol",
+            "direction",
+            "entry",
+            "sl",
+            "tp1",
+            "tp2",
+            "tp3",
+            "opened_at",
+            "closed_at",
+            "exit_price",
+            "result",
+            "r_multiple",
+        ]
+        rows = out.get("trades") or []
+        tdf = pd.DataFrame(rows)
+        if tdf.empty:
+            tdf = pd.DataFrame(columns=cols)
+        else:
+            # กันคอลัมน์หาย/สลับลำดับ
+            for c in cols:
+                if c not in tdf.columns:
+                    tdf[c] = pd.NA
+            tdf = tdf[cols]
+
+        tdf.to_csv(args.out.strip(), index=False)
+        print(f"OK: wrote trades -> {args.out.strip()}")
+
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+===== app/config/wave_settings.py =====
+from zoneinfo import ZoneInfo
+
+TIMEFRAME = "1d"
+BARS = 1000
+
+TIMEZONE = ZoneInfo("Asia/Bangkok")
+RUN_HOUR = 7
+RUN_MINUTE = 5
+
+SYMBOLS = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","BNBUSDT","BCHUSDT",
+    "ZECUSDT","SUIUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","FILUSDT","LTCUSDT",
+    "DOTUSDT","UNIUSDT","NEARUSDT","AAVEUSDT","OPUSDT","ARBUSDT","TRXUSDT",
+    "APTUSDT","HBARUSDT","INJUSDT","XLMUSDT","AXSUSDT","XMRUSDT","SNXUSDT",
+    "ETCUSDT","CRVUSDT","DASHUSDT","UMAUSDT","ICPUSDT","ATOMUSDT","LPTUSDT",
+    "GALAUSDT","ZILUSDT","DUSKUSDT",
+]
+
+# --- Position sizing (fixed notional per trade) ---
+DEFAULT_NOTIONAL_USDT = 3.5
+
+# Override per symbol when DEFAULT is too small to pass Binance minQty/step.
+# NOTE: BTC needs a much larger notional because minQty is 0.001 BTC.
+NOTIONAL_MAP = {
+    "BTCUSDT": 70.0,
+    "BNBUSDT": 6.5,
+    "AVAXUSDT": 10.0,
+    "AAVEUSDT": 12.0,
+}
+
+FRACTAL_LEFT = 2
+FRACTAL_RIGHT = 2
+
+MAX_SCENARIOS = 3
+MIN_RR = 1.5
+MIN_CONFIDENCE_LIVE = 65.0
+MIN_CONFIDENCE_BACKTEST = 65.0
+ABC_CONFIRM_BUFFER = 0.01
+
+MAX_RETRY = 3
+===== app/data/__init__.py =====
+
+===== app/data/binance_fetcher.py =====
+import logging
+import time
+
+import pandas as pd
+import requests
+
+logger = logging.getLogger(__name__)
+
+BASE_URL = "https://api.binance.com/api/v3/klines"
+_MAX_RETRY = 3
+_RETRY_DELAY = 5  # วินาที
+
+
+def fetch_ohlcv(symbol: str, interval: str = "1d", limit: int = 1000) -> pd.DataFrame:
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit,
+    }
+
+    last_error = None
+
+    for attempt in range(1, _MAX_RETRY + 1):
+        try:
+            response = requests.get(BASE_URL, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            df = pd.DataFrame(
+                data,
+                columns=[
+                    "open_time", "open", "high", "low", "close", "volume",
+                    "close_time", "qav", "num_trades",
+                    "taker_base_vol", "taker_quote_vol", "ignore",
+                ],
+            )
+
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+            df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
+
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = df[col].astype(float)
+
+            return df[["open_time", "open", "high", "low", "close", "volume"]]
+
+        except requests.exceptions.Timeout:
+            last_error = "timeout"
+            logger.warning(f"[{symbol}] fetch timeout attempt={attempt}/{_MAX_RETRY}")
+
+        except requests.exceptions.ConnectionError:
+            last_error = "connection error"
+            logger.warning(f"[{symbol}] connection error attempt={attempt}/{_MAX_RETRY}")
+
+        except requests.exceptions.HTTPError as e:
+            last_error = str(e)
+            logger.warning(f"[{symbol}] HTTP error {e} attempt={attempt}/{_MAX_RETRY}")
+
+        except Exception as e:
+            last_error = str(e)
+            logger.error(f"[{symbol}] unexpected error {e} attempt={attempt}/{_MAX_RETRY}")
+
+        if attempt < _MAX_RETRY:
+            time.sleep(_RETRY_DELAY)
+
+    logger.error(f"[{symbol}] fetch_ohlcv ล้มเหลวทุก {_MAX_RETRY} ครั้ง: {last_error}")
+    return pd.DataFrame()
+
+
+def drop_unclosed_candle(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or len(df) < 2:
+        return df
+
+    try:
+        last_open = df["open_time"].iloc[-1]
+        prev_open = df["open_time"].iloc[-2]
+        interval = last_open - prev_open
+        expected_close = last_open + interval
+        now = pd.Timestamp.now(tz="UTC")
+
+        if now < expected_close:
+            return df.iloc[:-1].copy()
+
+        return df.copy()
+
+    except Exception as e:
+        logger.error(f"drop_unclosed_candle error: {e}")
+        return df.copy()
+
+===== app/data/export_ohlcv_csv.py =====
+# app/data/export_ohlcv_csv.py
+from __future__ import annotations
+
+import argparse
+import os
+import time
+
+import pandas as pd
+import requests
+
+from app.data.binance_fetcher import drop_unclosed_candle
+
+BASE_URL = "https://api.binance.com/api/v3/klines"
+_BINANCE_MAX_PER_CALL = 1000
+
+
+def _fetch_ohlcv_paginated(
+    symbol: str,
+    interval: str,
+    total_limit: int,
+) -> pd.DataFrame:
+    """
+    Fetch OHLCV จาก Binance แบบ paginated
+    Binance จำกัด 1000 bars ต่อ 1 call → ต้อง loop หลาย call
+    ใช้ endTime เพื่อดึงข้อมูลย้อนหลัง
+    """
+    all_rows = []
+    end_time: int | None = None  # None = ล่าสุด, จากนั้นใช้ open_time แรก - 1ms
+
+    remaining = total_limit
+
+    while remaining > 0:
+        batch_size = min(remaining, _BINANCE_MAX_PER_CALL)
+
+        params: dict = {
+            "symbol":   symbol,
+            "interval": interval,
+            "limit":    batch_size,
+        }
+        if end_time is not None:
+            params["endTime"] = end_time
+
+        try:
+            resp = requests.get(BASE_URL, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            print(f"[WARN] fetch error: {e} → หยุด pagination")
+            break
+
+        if not data:
+            break
+
+        # data เรียงจากเก่า → ใหม่
+        all_rows = data + all_rows  # prepend (เก่ากว่าไว้หน้า)
+        remaining -= len(data)
+
+        if len(data) < batch_size:
+            # ข้อมูลหมดแล้ว ไม่ต้อง fetch ต่อ
+            break
+
+        # เลื่อน endTime ไปก่อนหน้า candle แรกที่ได้มา
+        first_open_time = int(data[0][0])
+        end_time = first_open_time - 1
+
+        time.sleep(0.2)  # กัน rate limit
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(
+        all_rows,
+        columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "qav", "num_trades",
+            "taker_base_vol", "taker_quote_vol", "ignore",
+        ],
+    )
+
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
+
+    df = df[["open_time", "open", "high", "low", "close", "volume"]].copy()
+
+    # กัน duplicate rows (อาจเกิดจาก pagination overlap)
+    df = df.drop_duplicates(subset=["open_time"]).sort_values("open_time").reset_index(drop=True)
+
+    return df
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--symbol",   required=True)
+    ap.add_argument("--interval", default="1d")
+    ap.add_argument("--limit",    type=int, default=1500)
+    ap.add_argument("--out",      default="data")
+    args = ap.parse_args()
+
+    print(f"Fetching {args.symbol} {args.interval} limit={args.limit} ...")
+
+    df = _fetch_ohlcv_paginated(args.symbol, args.interval, args.limit)
+    df = drop_unclosed_candle(df)
+
+    if df is None or df.empty:
+        raise SystemExit("fetch returned empty df")
+
+    os.makedirs(args.out, exist_ok=True)
+    out_path = os.path.join(args.out, f"{args.symbol}_{args.interval}.csv")
+    df.to_csv(out_path, index=True)
+    print(f"OK: saved {out_path} rows={len(df)} cols={list(df.columns)}")
+
+
+if __name__ == "__main__":
+    main()
+===== app/indicators/__init__.py =====
+
+===== app/indicators/atr.py =====
+import pandas as pd
+
+
+def atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    """
+    ATR (Wilder)
+    expects columns: high, low, close
+    """
+
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
+    prev_close = close.shift(1)
+
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    return true_range.ewm(alpha=1 / length, adjust=False).mean()
+
+
+def add_atr(df: pd.DataFrame, length: int = 14) -> pd.DataFrame:
+    out = df.copy()
+    out[f"atr{length}"] = atr(out, length)
+    return out
+    
+===== app/indicators/ema.py =====
+import pandas as pd
+
+def ema(series: pd.Series, length: int) -> pd.Series:
+    """
+    Exponential Moving Average (EMA)
+    """
+    return series.ewm(span=length, adjust=False).mean()
+
+def add_ema(df: pd.DataFrame, lengths=(50, 200)) -> pd.DataFrame:
+    """
+    Add EMA columns to df
+    - expects df has 'close'
+    """
+    out = df.copy()
+    for L in lengths:
+        out[f"ema{L}"] = ema(out["close"], L)
+    return out
+===== app/indicators/rsi.py =====
+import pandas as pd
+
+
+def rsi(close: pd.Series, length: int = 14) -> pd.Series:
+    """
+    RSI (Wilder)
+    """
+    delta = close.diff()
+
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+
+    avg_gain = gain.ewm(alpha=1 / length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / length, adjust=False).mean()
+
+    rs = avg_gain / avg_loss.replace(0, 1e-12)
+    out = 100 - (100 / (1 + rs))
+    return out
+
+
+def add_rsi(df: pd.DataFrame, length: int = 14) -> pd.DataFrame:
+    """
+    Add RSI column to df
+    - expects df has 'close'
+    """
+    out = df.copy()
+    out[f"rsi{length}"] = rsi(out["close"], length)
+    return out
+    
+===== app/indicators/trend_filter.py =====
+import pandas as pd
+
+
+def trend_filter_ema(df: pd.DataFrame) -> str:
+    """
+    Trend filter using EMA50/EMA200
+    expects columns: ema50, ema200, close
+
+    returns: "BULL", "BEAR", "NEUTRAL"
+    """
+    if "ema50" not in df.columns or "ema200" not in df.columns:
+        return "NEUTRAL"
+
+    close = df["close"].iloc[-1]
+    ema50 = df["ema50"].iloc[-1]
+    ema200 = df["ema200"].iloc[-1]
+
+    if pd.isna(ema50) or pd.isna(ema200):
+        return "NEUTRAL"
+
+    if close > ema50 > ema200:
+        return "BULL"
+    if close < ema50 < ema200:
+        return "BEAR"
+    return "NEUTRAL"
+
+
+def allow_direction(macro_trend: str, direction: str) -> bool:
+    """
+    Allow trade direction based on macro trend
+    - BULL: allow LONG
+    - BEAR: allow SHORT
+    - NEUTRAL: allow both but treat as lower confidence
+    """
+    macro_trend = (macro_trend or "").upper()
+    direction = (direction or "").upper()
+
+    if macro_trend == "BULL":
+        return direction == "LONG"
+    if macro_trend == "BEAR":
+        return direction == "SHORT"
+    return True
+===== app/indicators/volume.py =====
+import pandas as pd
+
+
+def add_volume_ma(df: pd.DataFrame, length: int = 20) -> pd.DataFrame:
+    """
+    Add Volume Moving Average
+    expects column: volume
+    """
+
+    out = df.copy()
+    out[f"vol_ma{length}"] = out["volume"].rolling(length).mean()
+    return out
+
+
+def volume_spike(df: pd.DataFrame, length: int = 20, multiplier: float = 1.5) -> bool:
+    """
+    Check if latest volume > multiplier × volume MA
+    """
+
+    if len(df) < length + 1:
+        return False
+
+    vol = df["volume"].iloc[-1]
+    vol_ma = df[f"vol_ma{length}"].iloc[-1]
+
+    if pd.isna(vol_ma):
+        return False
+
+    return vol > vol_ma * multiplier
+===== app/main.py =====
+# app/main.py
+import sys
+import os
+import subprocess
+import threading
+from dotenv import load_dotenv
+
+load_dotenv()
+os.environ["TZ"] = "Asia/Bangkok"
+
+import time
+
+# -------- BALANCE CACHE --------
+_balance_cache = {
+    "value": None,
+    "timestamp": 0
+}
+BALANCE_CACHE_SECONDS = 300
+
+# -------- SIMPLE RATE LIMIT --------
+_rate_limit = {}
+RATE_LIMIT_SECONDS = 3
+
+time.tzset()
+
+from flask import Flask, request
+import requests
+
+from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
+from app.config.wave_settings import TIMEFRAME
+from app.trading.binance_trader import get_balance, get_open_positions
+from app.trading.trade_executor import execute_signal
+# from app.state.position_manager import get_active, _load_position, _key
+
+app = Flask(__name__)
+
+from app.performance.dashboard import perf_bp
+app.register_blueprint(perf_bp)
+
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ELLIOTT QUANTUM — CONTROL</title>
+<meta http-equiv="refresh" content="30">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#00040a;--cyan:#00f5ff;--green:#00ff9d;--red:#ff1744;--yellow:#ffea00;--panel:rgba(0,20,40,0.85);--border:rgba(0,245,255,0.12);--border-hot:rgba(0,245,255,0.4);--text:#8ab8d0;--dim:#1a4060}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monospace;font-size:12px;overflow-x:hidden}
+.space-bg{position:fixed;inset:0;z-index:0;background:radial-gradient(ellipse 80% 60% at 20% 50%,rgba(0,50,100,0.25),transparent 60%),radial-gradient(ellipse 60% 80% at 80% 30%,rgba(40,0,80,0.2),transparent 60%),#00040a}
+.stars{position:fixed;inset:0;z-index:0;background-image:radial-gradient(1px 1px at 10% 15%,rgba(255,255,255,0.6),transparent),radial-gradient(1px 1px at 25% 40%,rgba(255,255,255,0.4),transparent),radial-gradient(1.5px 1.5px at 40% 10%,rgba(255,255,255,0.7),transparent),radial-gradient(1px 1px at 70% 25%,rgba(255,255,255,0.5),transparent),radial-gradient(1px 1px at 85% 5%,rgba(255,255,255,0.6),transparent),radial-gradient(1px 1px at 48% 33%,rgba(0,245,255,0.4),transparent),radial-gradient(1px 1px at 72% 58%,rgba(176,64,255,0.3),transparent)}
+.scanlines{position:fixed;inset:0;z-index:1;background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,245,255,0.008) 3px,rgba(0,245,255,0.008) 4px);pointer-events:none}
+.grid-overlay{position:fixed;inset:0;z-index:1;background-image:linear-gradient(rgba(0,245,255,0.018) 1px,transparent 1px),linear-gradient(90deg,rgba(0,245,255,0.018) 1px,transparent 1px);background-size:60px 60px;pointer-events:none}
+.vignette{position:fixed;inset:0;z-index:2;background:radial-gradient(ellipse at center,transparent 50%,rgba(0,2,8,0.7));pointer-events:none}
+.root{position:relative;z-index:10;padding:18px 22px 48px;max-width:1100px;margin:0 auto}
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:16px;position:relative;border-bottom:1px solid var(--border-hot)}
+.header::after{content:'';position:absolute;bottom:-1px;left:0;width:320px;height:1px;background:linear-gradient(90deg,var(--cyan),transparent)}
+.logo-wrap{display:flex;align-items:center;gap:16px}
+.logo-hex{width:48px;height:48px;position:relative;display:flex;align-items:center;justify-content:center;font-size:20px}
+.logo-hex::before{content:'';position:absolute;inset:0;border:1px solid var(--border-hot);border-radius:6px;box-shadow:0 0 24px rgba(0,245,255,0.25);animation:hex-pulse 4s ease-in-out infinite}
+@keyframes hex-pulse{0%,100%{box-shadow:0 0 24px rgba(0,245,255,0.25)}50%{box-shadow:0 0 40px rgba(0,245,255,0.45)}}
+.logo-main{font-family:'Orbitron',monospace;font-size:18px;font-weight:900;letter-spacing:4px;color:var(--cyan);text-shadow:0 0 20px rgba(0,245,255,0.5)}
+.logo-sub{font-size:9px;letter-spacing:3px;color:var(--dim);text-transform:uppercase;margin-top:2px}
+.header-right{display:flex;align-items:center;gap:12px}
+.live-badge{display:flex;align-items:center;gap:8px;padding:6px 14px;border:1px solid rgba(0,255,157,0.3);border-radius:2px;background:rgba(0,255,157,0.05);font-size:10px;letter-spacing:2px;color:var(--green)}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);animation:blink 1.5s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
+.sys-tag{font-size:9px;letter-spacing:2px;padding:5px 12px;border:1px solid rgba(0,245,255,0.2);border-radius:2px;color:rgba(0,245,255,0.5)}
+.panel{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:16px;backdrop-filter:blur(10px);margin-bottom:12px}
+.panel::before,.panel::after,.panel .c1,.panel .c2{content:'';position:absolute;width:10px;height:10px;border-color:var(--cyan);border-style:solid;opacity:0.3}
+.panel::before{top:0;left:0;border-width:1px 0 0 1px}
+.panel::after{top:0;right:0;border-width:1px 1px 0 0}
+.panel .c1{bottom:0;left:0;border-width:0 0 1px 1px}
+.panel .c2{bottom:0;right:0;border-width:0 1px 1px 0}
+.panel-title{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border);text-shadow:0 0 10px rgba(0,245,255,0.5)}
+.panel-title::before{content:'';width:2px;height:12px;background:var(--cyan);box-shadow:0 0 8px var(--cyan);flex-shrink:0}
+.num{font-family:'Share Tech Mono',monospace;font-variant-numeric: tabular-nums;font-feature-settings: "tnum" 1;letter-spacing: 1px;}
+.balance{font-family:'Share Tech Mono',monospace;font-size:44px;font-weight:700;color:var(--green);text-shadow:0 0 20px rgba(0,255,157,0.4);letter-spacing:1px;}
+.balance-unit{font-size:14px;opacity:0.5;margin-left:6px}
+.balance-row{display:flex;align-items:baseline;gap:18px;flex-wrap:wrap}
+.pnl-total{font-family:'Share Tech Mono',monospace;font-size:18px;font-weight:700;letter-spacing:1px;opacity:0.95}
+.pnl-label{font-size:10px;letter-spacing:2px;opacity:0.55;margin-right:6px}
+.pos-row{padding:10px 0;border-bottom:1px solid rgba(0,245,255,0.05);font-size:11px;line-height:1.8}
+.pos-row:last-child{border-bottom:none}
+.pos-sym{font-family:'Orbitron',monospace;font-size:11px;color:var(--cyan);font-weight:700}
+.pnl-green{color:var(--green)}
+.pnl-red{color:var(--red)}
+.empty-pos{color:var(--dim);letter-spacing:2px;font-size:10px}
+.run-btn{font-family:'Orbitron',monospace;font-size:10px;letter-spacing:2px;padding:10px 24px;background:rgba(0,245,255,0.08);border:1px solid var(--border-hot);border-radius:3px;color:var(--cyan);cursor:pointer;transition:all 0.2s;text-shadow:0 0 10px rgba(0,245,255,0.3)}
+.run-btn:hover{background:rgba(0,245,255,0.15);box-shadow:0 0 20px rgba(0,245,255,0.2)}
+pre{background:rgba(0,0,0,0.4);border:1px solid var(--border);border-radius:3px;padding:12px;font-size:10px;max-height:300px;overflow-y:auto;line-height:1.6;color:var(--text)}
+pre::-webkit-scrollbar{width:3px}
+pre::-webkit-scrollbar-thumb{background:var(--dim);border-radius:2px}
+.footer{margin-top:16px;font-size:9px;letter-spacing:2px;color:var(--dim);border-top:1px solid var(--border);padding-top:12px;display:flex;justify-content:space-between}
+.footer a{color:var(--dim);text-decoration:none}
+.footer a:hover{color:var(--cyan)}
+</style>
+</head>
+<body>
+<div class="space-bg"></div>
+<div class="stars"></div>
+<div class="scanlines"></div>
+<div class="grid-overlay"></div>
+<div class="vignette"></div>
+<div class="root">
+  <div class="header">
+    <div class="logo-wrap">
+      <div class="logo-hex">🌊</div>
+      <div>
+        <div class="logo-main">ELLIOTT QUANTUM</div>
+        <div class="logo-sub">Control Terminal · Elliott Wave Engine</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="live-badge"><div class="live-dot"></div>LIVE</div>
+      <div class="sys-tag">LV.4</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="c1"></div><div class="c2"></div>
+    <div class="panel-title">Balance</div>
+    <div class="balance-row">
+      <div class="balance"><span class="num">BALANCE_PLACEHOLDER</span><span class="balance-unit">USDT</span></div>
+      <div class="pnl-total TOTAL_PNL_CLASS"><span class="pnl-label">OPEN PNL</span><span class="num">TOTAL_PNL_PLACEHOLDER</span><span class="balance-unit">USDT</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="c1"></div><div class="c2"></div>
+    <div class="panel-title">Active Positions</div>
+    POSITION_PLACEHOLDER
+  </div>
+
+  <div class="panel">
+    <div class="c1"></div><div class="c2"></div>
+    <div class="panel-title">Actions</div>
+    <form method="POST" action="/dashboard/run">
+      <input type="hidden" name="token" value="TOKEN_PLACEHOLDER">
+      <button class="run-btn" type="submit">▶ MANUAL RUN</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <div class="c1"></div><div class="c2"></div>
+    <div class="panel-title">System Log</div>
+    <pre>LOG_PLACEHOLDER</pre>
+  </div>
+
+  <div class="footer">
+    <span>ELLIOTT QUANTUM · BINANCE FUTURES · LIVE FEED</span>
+    <a href="">⟳ REFRESH</a>
+  </div>
+</div>
+</body>
+</html>"""
+
+# ------------------ DASHBOARD ------------------
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    token = request.args.get("token", "")
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    if token != expected:
+        return "FORBIDDEN - ใส่ ?token=YOUR_TOKEN", 403
+
+    # -------- RATE LIMIT --------
+    ip = request.remote_addr
+    now = time.time()
+
+    last = _rate_limit.get(ip, 0)
+    if now - last < RATE_LIMIT_SECONDS:
+        return "Too Many Requests", 429
+    _rate_limit[ip] = now
+
+    # -------- BALANCE CACHE --------
+    try:
+        if (
+            _balance_cache["value"] is None or
+            now - _balance_cache["timestamp"] > BALANCE_CACHE_SECONDS
+        ):
+            _balance_cache["value"] = get_balance()
+            _balance_cache["timestamp"] = now
+
+        balance = f"{_balance_cache['value']:.2f}"
+    except Exception as e:
+        balance = f"ERROR: {e}"
+
+    total_pnl = "0.00"
+    total_pnl_class = "pnl-green"
+
+    try:
+        positions = get_open_positions()
+        total = 0.0
+        for p in positions:
+            try:
+                total += float(p.get("unRealizedProfit") or 0)
+            except Exception:
+                pass
+        total_pnl = f"{total:+.2f}"
+        total_pnl_class = "pnl-green" if total >= 0 else "pnl-red"
+
+        pos_html = ""
+        for p in positions:
+            sym = p["symbol"]
+            amt = p["positionAmt"]
+            pnl = float(p["unRealizedProfit"])
+            entry = p.get("entryPrice", "-")
+            pos_html += f"<div>{sym} | Amt: {amt} | Entry: {entry} | PNL: {pnl:.2f}</div>"
+        if not pos_html:
+            pos_html = "<div>NO ACTIVE POSITION</div>"
+    except Exception as e:
+        pos_html = f"<div>ERROR: {e}</div>"
+        total_pnl = "0.00"
+        total_pnl_class = "pnl-red"
+
+    html = DASHBOARD_HTML
+    html = html.replace("BALANCE_PLACEHOLDER", balance)
+    html = html.replace("TOTAL_PNL_PLACEHOLDER", total_pnl)
+    html = html.replace("TOTAL_PNL_CLASS", total_pnl_class)
+    html = html.replace("POSITION_PLACEHOLDER", pos_html)
+
+    try:
+        log = subprocess.check_output(
+            ["journalctl", "-u", "elliott", "-n", "50", "--no-pager"],
+            text=True
+        )
+    except Exception as e:
+        log = f"LOG ERROR: {e}"
+
+    html = html.replace("LOG_PLACEHOLDER", log)
+    html = html.replace("TOKEN_PLACEHOLDER", token)
+
+    return html
+
+
+@app.route("/dashboard/run", methods=["POST"])
+def dashboard_run():
+    token = request.form.get("token", "")
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    if token != expected:
+        return "FORBIDDEN", 403
+
+    threading.Thread(target=run_daily_wave_job).start()
+    return f'<meta http-equiv="refresh" content="3;url=/dashboard?token={token}">Running...'
+
+
+# ------------------ EXECUTE ------------------
+
+@app.route("/execute", methods=["POST"])
+def execute():
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+
+    payload = request.get_json(silent=True) or {}
+    execute_signal(payload)
+    return {"ok": True}, 200
+
+# ------------------ POSITION STATUS ------------------
+
+@app.route("/position/status", methods=["GET"])
+def position_status():
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+
+    symbol = request.args.get("symbol", "").upper()
+    if not symbol:
+        return {"error": "symbol required"}, 400
+
+    positions = get_open_positions()
+    for p in positions:
+        if p["symbol"] == symbol and float(p["positionAmt"]) != 0:
+            return {"symbol": symbol, "active": True}, 200
+
+    return {"symbol": symbol, "active": False}, 200
+
+@app.route("/")
+def health():
+    return "OK", 200
+
+
+@app.route("/debug/ip")
+def debug_ip():
+    try:
+        ipv4 = requests.get("https://api.ipify.org", timeout=10).text.strip()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+    return {"ok": True, "ipv4": ipv4}, 200
+
+
+@app.route("/trend-watch", methods=["POST"])
+def trend_watch():
+    run_trend_watch_job(min_conf=65.0)
+    return "OK", 200
+
+
+@app.route("/run-daily", methods=["POST"])
+def run_daily():
+    expected = (os.getenv("CRON_TOKEN") or "").strip()
+    got = (request.headers.get("X-CRON-TOKEN") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+    run_daily_wave_job()
+    return "OK", 200
+
+
+@app.route("/log", methods=["POST"])
+def receive_log():
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.headers.get("X-EXEC-TOKEN") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+    payload = request.get_json(silent=True) or {}
+    msg = payload.get("msg", "")
+    print(f"[RAILWAY] {msg}", flush=True)
+    return {"ok": True}, 200
+
+
+# ✅ FIX: ใส่ token กันคนสุ่มยิง attach SL/TP
+@app.route("/debug/attach-sl-tp/<symbol>")
+def debug_attach(symbol: str):
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    got = (request.args.get("token") or "").strip()
+    if expected and got != expected:
+        return "FORBIDDEN", 403
+
+    from app.trading.binance_trader import get_open_positions, set_stop_loss, set_take_profit
+
+    symbol = (symbol or "").upper().strip()
+    positions = get_open_positions()
+
+    for p in positions:
+        if p.get("symbol") == symbol and float(p.get("positionAmt", 0)) != 0:
+            amt = float(p["positionAmt"])
+            mark = float(p.get("markPrice", 0) or 0)
+            side = "BUY" if amt > 0 else "SELL"  # ✅ side = ฝั่งเปิด (open_side)
+
+            # ตัวอย่างชั่วคราว
+            sl = mark * (0.5 if amt > 0 else 1.5)
+            tp = mark * (1.5 if amt > 0 else 0.5)
+
+            set_stop_loss(symbol, side, abs(amt), sl)
+            set_take_profit(symbol, side, abs(amt), tp)
+
+            return f"OK attached SL/TP to {symbol}", 200
+
+    return "NO ACTIVE POSITION", 404
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "run":
+        print("Manual Run Mode...")
+        run_daily_wave_job()
+    elif len(sys.argv) > 1 and sys.argv[1] == "trend-watch":
+        print("Manual Trend Watch Mode...")
+        run_trend_watch_job(min_conf=65.0)
+    else:
+        app.run(host="0.0.0.0", port=8080, debug=True)
+===== app/performance/__init__.py =====
+
+===== app/performance/dashboard.py =====
+# app/performance/dashboard.py
+# เพิ่มไฟล์ใหม่ ไม่แตะไฟล์เดิม
+# วิธีใช้: import แล้ว register blueprint ใน app/main.py
+from __future__ import annotations
+
+import os
+from flask import Blueprint, request
+from app.performance.metrics import compute_metrics
+
+perf_bp = Blueprint("performance", __name__)
+
+PERF_HTML = """<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Elliott Wave — Performance</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600&family=IBM+Plex+Sans+Thai:wght@300;400;600&display=swap');
+
+  :root {
+    --bg: #060a0f;
+    --panel: #0d1520;
+    --border: #1a2840;
+    --accent: #00c8ff;
+    --green: #00ff88;
+    --red: #ff3c5a;
+    --yellow: #ffd700;
+    --text: #c8d8e8;
+    --dim: #4a6080;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  /* grid noise bg */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(0,200,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,200,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrap { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 16px;
+  }
+
+  header h1 {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: -0.5px;
+  }
+
+  header span { color: var(--dim); font-size: 11px; }
+
+  /* KPI grid */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .kpi {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .kpi::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    opacity: 0.4;
+  }
+
+  .kpi.green::after { background: var(--green); }
+  .kpi.red::after { background: var(--red); }
+  .kpi.yellow::after { background: var(--yellow); }
+
+  .kpi-label { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .kpi-value { font-size: 26px; font-weight: 600; line-height: 1; }
+  .kpi-value.green { color: var(--green); }
+  .kpi-value.red { color: var(--red); }
+  .kpi-value.yellow { color: var(--yellow); }
+  .kpi-value.accent { color: var(--accent); }
+
+  /* panels */
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+
+  @media (max-width: 700px) { .panels { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+  }
+
+  .panel-title {
+    color: var(--dim);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* equity chart */
+  .chart-wrap { height: 120px; position: relative; }
+
+  canvas { width: 100% !important; height: 100% !important; }
+
+  /* symbol table */
+  table { width: 100%; border-collapse: collapse; }
+  th { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 8px; border-bottom: 1px solid rgba(26,40,64,0.5); font-size: 12px; }
+  tr:last-child td { border-bottom: none; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .pill.win { background: rgba(0,255,136,0.15); color: var(--green); }
+  .pill.loss { background: rgba(255,60,90,0.15); color: var(--red); }
+
+  /* positions log */
+  .log { max-height: 280px; overflow-y: auto; }
+  .log-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(26,40,64,0.5);
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .log-row:last-child { border-bottom: none; }
+  .log-sym { color: var(--accent); font-weight: 600; font-size: 12px; min-width: 90px; }
+  .log-detail { color: var(--dim); font-size: 11px; flex: 1; }
+  .log-result { font-size: 11px; font-weight: 600; }
+  .log-result.tp { color: var(--green); }
+  .log-result.sl { color: var(--red); }
+
+  .empty { color: var(--dim); text-align: center; padding: 32px; font-size: 12px; }
+
+  .refresh-note { color: var(--dim); font-size: 10px; margin-top: 16px; text-align: right; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>🌊 Elliott Wave — Performance</h1>
+    <span>Live จาก DB | ไม่ใช่ Backtest</span>
+  </header>
+
+  <!-- KPI -->
+  <div class="kpi-grid">
+    <div class="kpi green">
+      <div class="kpi-label">Winrate</div>
+      <div class="kpi-value green">WINRATE_VAL%</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Total Trades</div>
+      <div class="kpi-value accent">TOTAL_VAL</div>
+    </div>
+    <div class="kpi green">
+      <div class="kpi-label">Win</div>
+      <div class="kpi-value green">WIN_VAL</div>
+    </div>
+    <div class="kpi red">
+      <div class="kpi-label">Loss</div>
+      <div class="kpi-value red">LOSS_VAL</div>
+    </div>
+    <div class="kpi yellow">
+      <div class="kpi-label">Active</div>
+      <div class="kpi-value yellow">ACTIVE_VAL</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Total R</div>
+      <div class="kpi-value TOTAL_R_CLASS">TOTAL_R_VAL R</div>
+    </div>
+    <div class="kpi red">
+      <div class="kpi-label">Max Drawdown</div>
+      <div class="kpi-value red">MAX_DD_VAL R</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Sharpe Ratio</div>
+      <div class="kpi-value SHARPE_CLASS">SHARPE_VAL</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Profit Factor</div>
+      <div class="kpi-value accent">PF_VAL</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Avg R/Trade</div>
+      <div class="kpi-value accent">AVG_RR_VAL R</div>
+    </div>
+  </div>
+
+  <!-- Chart + Symbol Table -->
+  <div class="panels">
+    <div class="panel">
+      <div class="panel-title">Equity Curve (R)</div>
+      <div class="chart-wrap">
+        <canvas id="eqChart"></canvas>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Per Symbol</div>
+      SYM_TABLE_PLACEHOLDER
+    </div>
+  </div>
+
+  <!-- Closed positions log -->
+  <div class="panel">
+    <div class="panel-title">ประวัติการเทรด (ล่าสุด 30 รายการ)</div>
+    <div class="log">
+      LOG_PLACEHOLDER
+    </div>
+  </div>
+
+  <div class="refresh-note">🔄 <a href="" style="color:var(--dim)">รีเฟรช</a></div>
+
+</div>
+
+<script>
+const curve = EQUITY_CURVE_JSON;
+
+if (curve.length > 0) {
+  const canvas = document.getElementById('eqChart');
+  const ctx = canvas.getContext('2d');
+
+  canvas.width = canvas.offsetWidth * window.devicePixelRatio;
+  canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+  const W = canvas.offsetWidth;
+  const H = canvas.offsetHeight;
+  const pad = 8;
+
+  const min = Math.min(...curve, 0);
+  const max = Math.max(...curve, 0);
+  const range = max - min || 1;
+
+  const toX = i => pad + (i / (curve.length - 1 || 1)) * (W - pad * 2);
+  const toY = v => H - pad - ((v - min) / range) * (H - pad * 2);
+
+  // zero line
+  ctx.beginPath();
+  ctx.strokeStyle = 'rgba(74,96,128,0.5)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  const zeroY = toY(0);
+  ctx.moveTo(pad, zeroY);
+  ctx.lineTo(W - pad, zeroY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // fill
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  const lastVal = curve[curve.length - 1];
+  const mainColor = lastVal >= 0 ? '#00ff88' : '#ff3c5a';
+  grad.addColorStop(0, mainColor + '33');
+  grad.addColorStop(1, mainColor + '00');
+
+  ctx.beginPath();
+  curve.forEach((v, i) => {
+    i === 0 ? ctx.moveTo(toX(i), toY(v)) : ctx.lineTo(toX(i), toY(v));
+  });
+  ctx.lineTo(toX(curve.length - 1), H);
+  ctx.lineTo(toX(0), H);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // line
+  ctx.beginPath();
+  ctx.strokeStyle = mainColor;
+  ctx.lineWidth = 2;
+  curve.forEach((v, i) => {
+    i === 0 ? ctx.moveTo(toX(i), toY(v)) : ctx.lineTo(toX(i), toY(v));
+  });
+  ctx.stroke();
+}
+</script>
+</body>
+</html>
+"""
+
+
+def _fmt(x: float) -> str:
+    x = float(x)
+    return f"{x:,.5f}" if x < 1 else f"{x:,.2f}"
+
+
+@perf_bp.route("/performance", methods=["GET"])
+def performance_dashboard():
+    expected = (os.getenv("EXEC_TOKEN") or "").strip()
+    token = (request.args.get("token") or "").strip()
+    if expected and token != expected:
+        return "FORBIDDEN", 403
+
+    m = compute_metrics()
+
+    # Symbol table
+    sym_stats = m.get("symbol_stats") or {}
+    if sym_stats:
+        rows = ""
+        for sym, s in sorted(sym_stats.items(), key=lambda x: -x[1]["total"]):
+            wr_class = "win" if s["winrate"] >= 50 else "loss"
+            rows += f"""<tr>
+              <td>{sym}</td>
+              <td>{s['total']}</td>
+              <td><span class="pill {wr_class}">{s['winrate']}%</span></td>
+            </tr>"""
+        sym_table = f"""<table>
+          <thead><tr><th>Symbol</th><th>Trades</th><th>Winrate</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>"""
+    else:
+        sym_table = '<div class="empty">ยังไม่มีข้อมูล</div>'
+
+    # Log
+    closed = list(reversed(m.get("closed_positions") or []))[:30]
+    if closed:
+        log_html = ""
+        for p in closed:
+            reason = p.get("closed_reason", "?")
+            cls = "tp" if reason == "TP3" else "sl"
+            label = "✅ TP3" if reason == "TP3" else "❌ SL"
+            direction = p.get("direction", "-")
+            entry = _fmt(p.get("entry") or 0)
+            sl = _fmt(p.get("sl") or 0)
+            tp3 = _fmt(p.get("tp3") or 0)
+            opened = (p.get("opened_at") or "")[:16].replace("T", " ")
+            closed_at = (p.get("closed_at") or "")[:16].replace("T", " ")
+            log_html += f"""<div class="log-row">
+              <div class="log-sym">{p.get('symbol','-')}</div>
+              <div class="log-detail">{direction} | Entry {entry} | SL {sl} | TP3 {tp3}<br>{opened} → {closed_at}</div>
+              <div class="log-result {cls}">{label}</div>
+            </div>"""
+    else:
+        log_html = '<div class="empty">ยังไม่มีประวัติการเทรด</div>'
+
+    # Render
+    total_r = m["total_r"]
+    sharpe = m["sharpe_ratio"]
+
+    html = PERF_HTML
+    html = html.replace("WINRATE_VAL", str(m["winrate"]))
+    html = html.replace("TOTAL_VAL", str(m["total_closed"]))
+    html = html.replace("WIN_VAL", str(m["win_count"]))
+    html = html.replace("LOSS_VAL", str(m["loss_count"]))
+    html = html.replace("ACTIVE_VAL", str(m["active"]))
+    html = html.replace("TOTAL_R_VAL", str(total_r))
+    html = html.replace("TOTAL_R_CLASS", "green" if total_r >= 0 else "red")
+    html = html.replace("MAX_DD_VAL", str(m["max_drawdown_r"]))
+    html = html.replace("SHARPE_VAL", str(sharpe))
+    html = html.replace("SHARPE_CLASS", "green" if sharpe >= 1 else ("yellow" if sharpe >= 0 else "red"))
+    html = html.replace("PF_VAL", str(m["profit_factor"]))
+    html = html.replace("AVG_RR_VAL", str(m["avg_rr"]))
+    html = html.replace("SYM_TABLE_PLACEHOLDER", sym_table)
+    html = html.replace("LOG_PLACEHOLDER", log_html)
+    html = html.replace("EQUITY_CURVE_JSON", str(m["equity_curve"]))
+
+    return html
+===== app/performance/metrics.py =====
+# app/performance/metrics.py
+# อ่านข้อมูลจาก DB เดิม ไม่แตะไฟล์ใด
+from __future__ import annotations
+
+import json
+import math
+import sqlite3
+from pathlib import Path
+from typing import Dict, List, Optional
+
+DB_PATH = Path("positions.db")
+
+
+def _get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def load_all_positions() -> List[Dict]:
+    if not DB_PATH.exists():
+        return []
+    try:
+        with _get_conn() as conn:
+            rows = conn.execute("SELECT data FROM positions").fetchall()
+        return [json.loads(r["data"]) for r in rows]
+    except Exception:
+        return []
+
+
+def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
+    if positions is None:
+        positions = load_all_positions()
+
+    closed = [p for p in positions if p.get("status") == "CLOSED"]
+    active = [p for p in positions if p.get("status") == "ACTIVE"]
+
+    total_closed = len(closed)
+    wins = [p for p in closed if p.get("closed_reason") == "TP3"]
+    losses = [p for p in closed if p.get("closed_reason") == "SL"]
+
+    win_count = len(wins)
+    loss_count = len(losses)
+    winrate = round((win_count / total_closed) * 100, 2) if total_closed > 0 else 0.0
+
+    # R-multiple per trade (TP3 = +RR, SL = -1R)
+    r_multiples: List[float] = []
+    for p in closed:
+        entry = float(p.get("entry", 0) or 0)
+        sl = float(p.get("sl", 0) or 0)
+        tp3 = float(p.get("tp3", 0) or 0)
+        risk = abs(entry - sl)
+        if risk <= 0:
+            continue
+        if p.get("closed_reason") == "TP3":
+            rr = abs(tp3 - entry) / risk
+            r_multiples.append(rr)
+        elif p.get("closed_reason") == "SL":
+            r_multiples.append(-1.0)
+
+    # Equity curve
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    equity_curve: List[float] = []
+    for r in r_multiples:
+        equity += r
+        peak = max(peak, equity)
+        dd = peak - equity
+        max_dd = max(max_dd, dd)
+        equity_curve.append(round(equity, 3))
+
+    total_r = round(equity, 3)
+
+    # Sharpe Ratio (annualized, assume 1 trade/day avg)
+    sharpe = 0.0
+    if len(r_multiples) >= 2:
+        mean_r = sum(r_multiples) / len(r_multiples)
+        variance = sum((r - mean_r) ** 2 for r in r_multiples) / len(r_multiples)
+        std_r = math.sqrt(variance)
+        if std_r > 0:
+            sharpe = round((mean_r / std_r) * math.sqrt(252), 2)
+
+    # Profit factor
+    gross_profit = sum(r for r in r_multiples if r > 0)
+    gross_loss = abs(sum(r for r in r_multiples if r < 0))
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 0.0
+
+    # Avg RR
+    avg_rr = round(sum(r_multiples) / len(r_multiples), 2) if r_multiples else 0.0
+
+    # Per symbol breakdown
+    symbol_stats: Dict[str, Dict] = {}
+    for p in closed:
+        sym = p.get("symbol", "?")
+        if sym not in symbol_stats:
+            symbol_stats[sym] = {"wins": 0, "losses": 0}
+        if p.get("closed_reason") == "TP3":
+            symbol_stats[sym]["wins"] += 1
+        elif p.get("closed_reason") == "SL":
+            symbol_stats[sym]["losses"] += 1
+
+    for sym, s in symbol_stats.items():
+        t = s["wins"] + s["losses"]
+        s["winrate"] = round((s["wins"] / t) * 100, 1) if t > 0 else 0.0
+        s["total"] = t
+
+    return {
+        "total_closed": total_closed,
+        "active": len(active),
+        "win_count": win_count,
+        "loss_count": loss_count,
+        "winrate": winrate,
+        "total_r": total_r,
+        "max_drawdown_r": round(max_dd, 3),
+        "sharpe_ratio": sharpe,
+        "profit_factor": profit_factor,
+        "avg_rr": avg_rr,
+        "equity_curve": equity_curve,
+        "symbol_stats": symbol_stats,
+        "closed_positions": closed,
+        "active_positions": active,
+    }
+===== app/risk/__init__.py =====
+
+===== app/risk/risk_manager.py =====
+from __future__ import annotations
+
+import os
+import logging
+from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+# SL ต้องห่างจาก entry อย่างน้อยกี่ % ถึงจะ valid
+# ถ้าน้อยกว่านี้ = SL ใกล้เกินไป โดนง่ายมาก → reject
+MIN_SL_PCT = 1.0  # 1.0% of entry
+
+
+def calculate_rr(entry: float, sl: float, tp: float) -> float:
+    risk = abs(entry - sl)
+    reward = abs(tp - entry)
+    if risk == 0:
+        return 0.0
+    return reward / risk
+
+
+def _safe_fib_extension(
+    p0: float,
+    p1: float,
+    anchor: float,
+    direction: str,
+    base_len: float,
+) -> Optional[Dict]:
+    direction = (direction or "").upper()
+
+    if base_len <= 0:
+        base_len = abs(p1 - p0)
+    if base_len <= 0:
+        logger.warning(f"fib_extension: base_len<=0 (p0={p0}, p1={p1}) -> return None")
+        return None
+
+    if direction == "LONG":
+        t1 = anchor + base_len * 1.0
+        t2 = anchor + base_len * 1.618
+        t3 = anchor + base_len * 2.0
+    else:  # SHORT
+        t1 = anchor - base_len * 1.0
+        t2 = anchor - base_len * 1.618
+        t3 = anchor - base_len * 2.0
+
+    if t1 <= 0 or t2 <= 0 or t3 <= 0:
+        logger.warning(
+            f"fib_extension: invalid targets (t1={t1:.6f}, t2={t2:.6f}, t3={t3:.6f}) "
+            f"anchor={anchor}, base_len={base_len} -> return None"
+        )
+        return None
+
+    return {"1.0": t1, "1.618": t2, "2.0": t3}
+
+
+def _check_sl_distance(entry: float, sl: float, direction: str) -> Optional[str]:
+    """
+    ตรวจว่า SL ห่างจาก entry พอไหม
+    ถ้าน้อยกว่า MIN_SL_PCT → คืน reason string
+    ถ้าผ่าน → คืน None
+    """
+    if entry <= 0:
+        return "entry <= 0"
+    sl_pct = abs(entry - sl) / entry * 100
+    if sl_pct < MIN_SL_PCT:
+        return f"SL ใกล้เกินไป ({sl_pct:.2f}% < {MIN_SL_PCT}%)"
+    return None
+
+
+def _cap_tp3_by_max_r(entry: float, sl: float, tp3: float, direction: str) -> float:
+    """
+    จำกัด TP3 ไม่ให้เกิน MAX_TP_R (หน่วยเป็น R)
+    เปิดใช้ด้วย env: MAX_TP_R=3 (หรือ 2.5, 4 ฯลฯ)
+
+    หมายเหตุ:
+    - ไม่แตะ tp1/tp2
+    - ใช้ risk จาก |entry-sl| หลังปรับ sr แล้วเท่านั้น
+    """
+    try:
+        s = (os.getenv("MAX_TP_R", "") or "").strip()
+        max_r = float(s) if s else 0.0
+    except Exception:
+        max_r = 0.0
+
+    if not max_r or max_r <= 0:
+        return float(tp3)
+
+    risk = abs(float(entry) - float(sl))
+    if risk <= 0:
+        return float(tp3)
+
+    d = (direction or "").upper()
+    if d == "LONG":
+        r_tp3 = (float(tp3) - float(entry)) / risk
+        if r_tp3 > max_r:
+            return float(entry) + risk * max_r
+        return float(tp3)
+
+    if d == "SHORT":
+        r_tp3 = (float(entry) - float(tp3)) / risk
+        if r_tp3 > max_r:
+            return float(entry) - risk * max_r
+        return float(tp3)
+
+    return float(tp3)
+
+
+def build_trade_plan(
+    scenario: Dict,
+    current_price: float,
+    min_rr: float = 2.0,
+    sr: Optional[Dict] = None,
+) -> Dict:
+    stype = (scenario.get("type") or "").upper()
+    direction = (scenario.get("direction") or "").upper()
+
+    trade = {
+        "direction": direction,
+        "entry": None,
+        "sl": None,
+        "tp1": None,
+        "tp2": None,
+        "tp3": None,
+        "valid": False,
+        "reason": "",
+    }
+
+    # =========================
+    # SIDEWAY_RANGE
+    # =========================
+    if stype == "SIDEWAY_RANGE":
+        range_low = float(scenario.get("range_low") or 0)
+        range_high = float(scenario.get("range_high") or 0)
+        atr = float(scenario.get("atr") or current_price * 0.01)
+
+        if range_low <= 0 or range_high <= range_low:
+            trade["reason"] = "SIDEWAY: range ไม่ valid"
+            return trade
+
+        span = range_high - range_low
+
+        if direction == "LONG":
+            entry = float(current_price)
+            sl = range_low - atr * 0.5
+            tp1 = range_low + span * 0.382
+            tp2 = range_low + span * 0.618
+            tp3 = range_high - atr * 0.3
+        elif direction == "SHORT":
+            entry = float(current_price)
+            sl = range_high + atr * 0.5
+            tp1 = range_high - span * 0.382
+            tp2 = range_high - span * 0.618
+            tp3 = range_low + atr * 0.3
+        else:
+            trade["reason"] = "SIDEWAY: direction ไม่ถูกต้อง"
+            return trade
+
+        # SL distance check
+        sl_err = _check_sl_distance(entry, sl, direction)
+        if sl_err:
+            trade["reason"] = f"SIDEWAY: {sl_err}"
+            return trade
+
+        # ✅ APPLY CAP (ให้ MAX_TP_R มีผลจริง)
+        tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
+
+        rr = calculate_rr(entry, sl, tp2)
+        if rr >= min_rr:
+            trade.update({
+                "entry": entry, "sl": sl,
+                "tp1": tp1, "tp2": tp2, "tp3": tp3,
+                "valid": True,
+                "reason": f"RR(TP2)={round(rr, 2)} ≥ {min_rr}",
+            })
+        else:
+            trade["reason"] = f"RR(TP2) ต่ำ ({round(rr, 2)})"
+        return trade
+
+    # =========================
+    # ABC
+    # =========================
+    if stype in ("ABC_DOWN", "ABC_UP"):
+        pivots = scenario.get("pivots") or []
+        if len(pivots) < 3:
+            trade["reason"] = "ABC: pivots ไม่พอ"
+            return trade
+
+        if stype == "ABC_DOWN":
+            h0 = float(pivots[0]["price"])
+            l1 = float(pivots[1]["price"])
+            h2 = float(pivots[2]["price"])
+            a_len = abs(h0 - l1)
+
+            if current_price >= h2:
+                trade["reason"] = "ABC_DOWN: ราคาเหนือ SL แล้ว (invalid)"
+                return trade
+
+            entry = float(current_price)
+            sl = h2
+
+            # SL distance check
+            sl_err = _check_sl_distance(entry, sl, direction)
+            if sl_err:
+                trade["reason"] = f"ABC_DOWN: {sl_err}"
+                return trade
+
+            fib = _safe_fib_extension(h0, l1, entry, "SHORT", a_len)
+            if fib is None:
+                trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
+                return trade
+            tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
+
+            # sr adjustment
+            if sr:
+                resist = (sr.get("resist") or {}).get("level")
+                if resist and float(resist) < sl:
+                    sl = float(resist)
+
+            # re-check SL distance AFTER sr adjustment
+            sl_err = _check_sl_distance(entry, sl, direction)
+            if sl_err:
+                trade["reason"] = f"ABC_DOWN(after SR): {sl_err}"
+                return trade                   
+
+        else:  # ABC_UP
+            l0 = float(pivots[0]["price"])
+            h1 = float(pivots[1]["price"])
+            l2 = float(pivots[2]["price"])
+            a_len = abs(h1 - l0)
+
+            if current_price <= l2:
+                trade["reason"] = "ABC_UP: ราคาต่ำกว่า SL แล้ว (invalid)"
+                return trade
+
+            entry = float(current_price)
+            sl = l2
+
+            # SL distance check — ก่อน SR
+            sl_err = _check_sl_distance(entry, sl, direction)
+            if sl_err:
+                trade["reason"] = f"ABC_UP: {sl_err}"
+                return trade
+
+            fib = _safe_fib_extension(l0, h1, entry, "LONG", a_len)
+            if fib is None:
+                trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
+                return trade
+            tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
+
+            # SR adjustment
+            if sr:
+                support = (sr.get("support") or {}).get("level")
+                if support and float(support) > sl:
+                    sl = float(support)
+
+            # ✅ re-check SL distance — หลัง SR
+            sl_err = _check_sl_distance(entry, sl, direction)
+            if sl_err:
+                trade["reason"] = f"ABC_UP(after SR): {sl_err}"
+                return trade
+
+        # cap TP3 หลัง SR (เหมือนเดิม)
+        tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
+
+        # ✅ RR gate ให้ตรงกับ execution: ใช้ TP2
+        rr = calculate_rr(entry, sl, tp2)
+
+        if rr >= min_rr:
+            trade.update({
+                "entry": entry, "sl": sl,
+                "tp1": tp1, "tp2": tp2, "tp3": tp3,
+                "valid": True,
+                "reason": f"RR(TP2)={round(rr, 2)} ≥ {min_rr} (fib+sr)",
+            })
+        else:
+            trade["reason"] = f"RR(TP2) ต่ำ ({round(rr, 2)})"
+        return trade
+    # =========================
+    # IMPULSE
+    # =========================
+    pivots = scenario.get("pivots") or []
+    if len(pivots) < 2:
+        trade["reason"] = "IMPULSE: pivots ไม่พอ"
+        return trade
+
+    breakout = float(pivots[-1]["price"])
+    sl = float(pivots[-2]["price"])
+    entry = breakout
+    p0 = float(pivots[0]["price"])
+    p1 = float(pivots[1]["price"])
+    base_len = abs(p1 - p0)
+
+    # SL distance check
+    sl_err = _check_sl_distance(entry, sl, direction)
+    if sl_err:
+        trade["reason"] = f"IMPULSE: {sl_err}"
+        return trade
+
+    fib = _safe_fib_extension(p0, p1, entry, direction, base_len)
+    if fib is None:
+        trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
+        return trade
+    tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
+
+    # sr adjustment
+    if direction == "LONG":
+        if sr:
+            support = (sr.get("support") or {}).get("level")
+            if support and float(support) > sl:
+                sl = float(support)
+    elif direction == "SHORT":
+        if sr:
+            resist = (sr.get("resist") or {}).get("level")
+            if resist and float(resist) < sl:
+                sl = float(resist)
+    else:
+        trade["reason"] = "IMPULSE: direction ไม่ถูกต้อง"
+        return trade
+
+    # re-check SL distance AFTER sr adjustment
+    sl_err = _check_sl_distance(entry, sl, direction)
+    if sl_err:
+        trade["reason"] = f"IMPULSE(after SR): {sl_err}"
+        return trade
+
+    # ✅ APPLY CAP หลัง sr adjustment เสร็จ (สำคัญ)
+    tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
+
+    rr = calculate_rr(entry, sl, tp2)
+    if rr >= min_rr:
+        trade.update({
+            "entry": entry, "sl": sl,
+            "tp1": tp1, "tp2": tp2, "tp3": tp3,
+            "valid": True,
+            "reason": f"RR(TP2)={round(rr, 2)} ≥ {min_rr} (fib+sr)",
+        })
+    else:
+        trade["reason"] = f"RR(TP2) ต่ำ ({round(rr, 2)})"
+
+    return trade
+
+
+def recalculate_from_fill(
+    direction: str,
+    actual_entry: float,
+    original_sl: float,
+    original_tp_rr: float,
+    min_rr: float = 1.6,
+) -> Dict:
+    direction = direction.upper()
+    risk = abs(actual_entry - original_sl)
+
+    if risk <= 0:
+        return {"valid": False, "reason": "risk=0 (entry==sl)"}
+
+    if direction == "LONG":
+        tp1 = actual_entry + risk * 1.0
+        tp2 = actual_entry + risk * original_tp_rr
+        tp3 = actual_entry + risk * 2.0
+    else:
+        tp1 = actual_entry - risk * 1.0
+        tp2 = actual_entry - risk * original_tp_rr
+        tp3 = actual_entry - risk * 2.0
+
+    rr = calculate_rr(actual_entry, original_sl, tp2)
+
+    if rr < min_rr:
+        return {
+            "valid": False,
+            "reason": f"RR(TP2) หลัง fill ต่ำ ({round(rr,2)} < {min_rr})",
+            "actual_entry": actual_entry,
+            "sl": original_sl,
+            "rr": round(rr, 2),
+        }
+
+    return {
+        "valid": True,
+        "actual_entry": actual_entry,
+        "sl": original_sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "rr": round(rr, 2),
+        "risk": round(risk, 6),
+    }
+===== app/scheduler/__init__.py =====
+
+===== app/scheduler/daily_wave_scheduler.py =====
+import time
+import os
+import requests as req
+from datetime import datetime
+
+from app.config.wave_settings import (
+    SYMBOLS,
+    RUN_HOUR,
+    RUN_MINUTE,
+    TIMEZONE,
+    MAX_RETRY,
+    TIMEFRAME,
+)
+from app.analysis.wave_engine import analyze_symbol
+from app.services.telegram_reporter import format_symbol_report, send_message
+
+
+def _check_position_from_vps(symbol: str) -> bool:
+    """ถาม VPS ว่ามี position เปิดอยู่ไหม"""
+    try:
+        vps_url = (os.getenv("VPS_URL", "") or "").rstrip("/")
+        exec_token = os.getenv("EXEC_TOKEN", "") or ""
+        if not vps_url or not exec_token:
+            return False
+
+        r = req.get(
+            f"{vps_url}/position/status",
+            params={"symbol": symbol},
+            headers={"X-EXEC-TOKEN": exec_token},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            return bool((r.json() or {}).get("active", False))
+        return False
+    except Exception:
+        return False
+
+
+def _fmt_price(x: float) -> str:
+    x = float(x)
+    return f"{x:,.5f}" if x < 1 else f"{x:,.2f}"
+
+
+def _pct_near(a: float, b: float) -> float:
+    """abs(a-b)/b *100"""
+    if not b:
+        return 999.0
+    return abs((a - b) / b) * 100.0
+
+
+def _fallback_scenarios(analysis: dict) -> list:
+    """
+    fallback เมื่อ wave_engine ไม่คืน scenarios
+    - valid: บังคับ True (เพื่อให้มีโอกาสส่งเมื่อ triggered)
+    - triggered: ราคาใกล้ entry ภายใน ENTRY_TRIGGER_PCT (%)
+    """
+    wl = ((analysis.get("wave_label") or {}).get("label") or {}) if analysis else {}
+    direction = (wl.get("direction") or "").upper()
+    conf = float(wl.get("confidence") or 0)
+    price = float(analysis.get("price") or 0)
+
+    pivots = wl.get("pivots") or []
+    last_L = None
+    last_H = None
+    for p in pivots:
+        t = (p.get("type") or "").upper()
+        if t == "L":
+            last_L = p
+        elif t == "H":
+            last_H = p
+
+    entry = None
+    if direction == "LONG" and last_L:
+        entry = float(last_L.get("price") or 0)
+    elif direction == "SHORT" and last_H:
+        entry = float(last_H.get("price") or 0)
+
+    if not entry:
+        entry = price
+
+    trigger_pct = float(os.getenv("ENTRY_TRIGGER_PCT", "0.30"))  # default 0.30%
+    dist = _pct_near(price, entry)
+    triggered = (dist <= trigger_pct) if (price and entry) else False
+
+    # % มาตรฐาน: SL 3%, TP 3/5/7
+    sl_pct = float(os.getenv("SL_PCT", "3.0"))
+    tp1_pct = float(os.getenv("TP1_PCT", "3.0"))
+    tp2_pct = float(os.getenv("TP2_PCT", "5.0"))
+    tp3_pct = float(os.getenv("TP3_PCT", "7.0"))
+
+    if direction == "SHORT":
+        stop_loss = entry * (1.0 + sl_pct / 100.0)
+        tp1 = entry * (1.0 - tp1_pct / 100.0)
+        tp2 = entry * (1.0 - tp2_pct / 100.0)
+        tp3 = entry * (1.0 - tp3_pct / 100.0)
+    else:
+        direction = "LONG"
+        stop_loss = entry * (1.0 - sl_pct / 100.0)
+        tp1 = entry * (1.0 + tp1_pct / 100.0)
+        tp2 = entry * (1.0 + tp2_pct / 100.0)
+        tp3 = entry * (1.0 + tp3_pct / 100.0)
+
+    sc = {
+        "direction": direction,
+        "confidence": conf,
+        "trade_plan": {
+            "valid": True,
+            "triggered": bool(triggered),
+            "entry": float(entry),
+            "sl": float(stop_loss),
+            "tp1": float(tp1),
+            "tp2": float(tp2),
+            "tp3": float(tp3),
+            "dist_to_entry_pct": float(dist),
+            "source": "fallback_wave_label",
+        },
+    }
+    return [sc]
+
+def run_daily_wave_job():
+    print(f"=== START DAILY WAVE JOB | tf={TIMEFRAME} | symbols={len(SYMBOLS)} ===", flush=True)
+    print("✅ Binance: SKIP (LOCAL MODE)", flush=True)
+
+    found = 0
+    found_symbols = []
+    errors = 0
+
+    for symbol in SYMBOLS:
+        print(f"[{symbol}] start", flush=True)
+        retry = 0
+
+        while retry < MAX_RETRY:
+            try:
+                analysis = analyze_symbol(symbol)
+                if not analysis:
+                    print(f"[{symbol}] no analysis -> skip", flush=True)
+                    break
+
+                active = _check_position_from_vps(symbol)
+                if active:
+                    print(f"[{symbol}] มี position อยู่ที่ VPS แล้ว ข้ามไป", flush=True)
+                    break
+
+                scenarios = analysis.get("scenarios", []) or []
+                sent = False
+
+                if not scenarios:
+                    wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
+                    print(
+                        f"[{symbol}] scenarios=0 | wave={wl.get('pattern')} {wl.get('direction')} conf={wl.get('confidence')}",
+                        flush=True
+                    )
+                    break
+
+                for sc in scenarios:
+                    trade = sc.get("trade_plan", {}) or {}
+
+                    status = (sc.get("status") or "").upper()
+                    allowed = bool(trade.get("allowed_to_trade", False))
+                    triggered = bool(trade.get("triggered", False))
+                    valid = bool(trade.get("valid", False))
+
+                    if status != "READY":
+                        continue
+                    if not (allowed and triggered and valid):
+                        continue
+
+                    text = format_symbol_report(analysis)
+                    send_message(text)
+
+                    print(f"[{symbol}] SENT signal", flush=True)
+
+                    found += 1
+                    found_symbols.append(symbol)
+                    sent = True
+                    break
+
+                if not sent:
+                    wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
+                    print(
+                        f"[{symbol}] no READY signal | wave={wl.get('pattern')} {wl.get('direction')} conf={wl.get('confidence')}",
+                        flush=True
+                    )
+
+                break
+
+            except Exception as e:
+                retry += 1
+                print(f"[{symbol}] ERROR retry={retry}/{MAX_RETRY}: {e}", flush=True)
+                if retry >= MAX_RETRY:
+                    errors += 1
+                    break
+                time.sleep(2)
+
+    summary = []
+    summary.append(f"🕖 DAILY SUMMARY ({TIMEFRAME.upper()})")
+    summary.append(f"สแกน: {len(SYMBOLS)} เหรียญ")
+    summary.append(f"พบสัญญาณ: {found} เหรียญ")
+    summary.append(f"ไม่พบสัญญาณ: {len(SYMBOLS) - found} เหรียญ")
+    if found_symbols:
+        summary.append("รายการที่พบ: " + ", ".join(found_symbols))
+    if errors:
+        summary.append(f"⚠️ errors: {errors}")
+
+    summary.append("")
+    summary.append("────────────────────")
+    summary.append("🔵 SYSTEM: ELLIOTT-WAVE")
+    summary.append("Engine: 1D")
+
+    send_message("\n".join(summary), topic_id=os.getenv("TOPIC_NORMAL_ID"))
+    print("=== END DAILY WAVE JOB ===", flush=True)
+
+def run_trend_watch_job(min_conf: float = 65.0):
+    """
+    Trend Watch: แจ้งเหรียญที่ confidence >= min_conf
+    """
+    print(f"=== START TREND WATCH | tf={TIMEFRAME} | min_conf={min_conf} ===", flush=True)
+
+    picks = []
+    errors = 0
+
+    for symbol in SYMBOLS:
+        retry = 0
+        while retry < MAX_RETRY:
+            try:
+                analysis = analyze_symbol(symbol)
+                if not analysis:
+                    break
+
+                scenarios = analysis.get("scenarios", []) or []
+                if not scenarios:
+                    scenarios = _fallback_scenarios(analysis)
+
+                sc = scenarios[0]
+                conf = float(sc.get("confidence") or 0)
+                if conf < float(min_conf):
+                    break
+
+                direction = (sc.get("direction") or "-").upper()
+                price = float(analysis.get("price") or 0)
+
+                trade = sc.get("trade_plan", {}) or {}
+                entry = trade.get("entry")
+                entry = float(entry) if entry is not None else None
+
+                dist = None
+                if entry and price:
+                    dist = abs((entry - price) / price) * 100.0
+
+                picks.append({
+                    "symbol": symbol,
+                    "direction": direction,
+                    "confidence": conf,
+                    "price": price,
+                    "entry": entry,
+                    "dist": dist,
+                })
+                break
+
+            except Exception as e:
+                retry += 1
+                print(f"[{symbol}] TREND WATCH ERROR retry={retry}/{MAX_RETRY}: {e}", flush=True)
+                if retry >= MAX_RETRY:
+                    errors += 1
+                    break
+                time.sleep(1)
+
+    picks.sort(key=lambda x: (-x["confidence"], x["dist"] if x["dist"] is not None else 1e9))
+
+    lines = []
+    lines.append("📡 TREND WATCH (1D)")
+    lines.append(f"เกณฑ์: Conf >= {int(min_conf)} | จำนวนที่น่าจับตา: {len(picks)}")
+    lines.append("")
+
+    if not picks:
+        lines.append("วันนี้ยังไม่มีเหรียญที่เข้าเกณฑ์")
+    else:
+        top = picks[:10]
+        for i, p in enumerate(top, start=1):
+            sym = p["symbol"]
+            d = p["direction"]
+            conf = round(p["confidence"], 1)
+            price = p["price"]
+            entry = p["entry"]
+            dist = p["dist"]
+
+            if entry is not None and dist is not None:
+                lines.append(f"{i}) {sym} {d} | Conf {conf} | ราคา {_fmt_price(price)} | Entry {_fmt_price(entry)} | ห่าง {dist:.2f}%")
+            else:
+                lines.append(f"{i}) {sym} {d} | Conf {conf} | ราคา {_fmt_price(price)}")
+
+        if len(picks) > 10:
+            lines.append("")
+            lines.append(f"…และมีอีก {len(picks) - 10} เหรียญที่เข้าเกณฑ์")
+
+    if errors:
+        lines.append("")
+        lines.append(f"⚠️ errors: {errors}")
+
+    lines.append("")
+    lines.append("────────────────────")
+    lines.append("🔵 SYSTEM: ELLIOTT-WAVE")
+    lines.append("Engine: 1D")
+
+    send_message("\n".join(lines), topic_id=os.getenv("TOPIC_NORMAL_ID"))
+    print("=== END TREND WATCH ===", flush=True)
+
+
+def start_scheduler_loop():
+    """
+    Loop เช็คเวลา RUN_HOUR:RUN_MINUTE ไทย แล้วรันวันละครั้ง
+    """
+    print("Wave Scheduler Started...", flush=True)
+
+    last_run_date = None  # กันรันซ้ำทั้งวัน
+
+    while True:
+        now = datetime.now(TIMEZONE)
+
+        if now.hour == RUN_HOUR and now.minute == RUN_MINUTE:
+            today = now.date()
+            if last_run_date != today:
+                run_daily_wave_job()
+                last_run_date = today
+            time.sleep(60)  # กันรันซ้ำในนาทีเดียวกัน
+
+        time.sleep(20)
+===== app/services/__init__.py =====
+
+===== app/services/telegram_reporter.py =====
+# app/services/telegram_reporter.py
+import os
+import requests
+
+
+def _tg_api_url(method: str, token: str) -> str:
+    return f"https://api.telegram.org/bot{token}/{method}"
+
+
+def send_message(text: str, topic_id: str | int | None = None) -> None:
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+    # รองรับหลายชื่อ env
+    TELEGRAM_TOPIC_ID = (os.getenv("TELEGRAM_TOPIC_ID") or "").strip()
+    TELEGRAM_TOPIC_ID = TELEGRAM_TOPIC_ID.strip()
+
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("\n====== TELEGRAM PREVIEW ======")
+        print(text)
+        print("====== END PREVIEW ======\n")
+        return
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+
+    if topic_id is not None and str(topic_id).strip().isdigit():
+        payload["message_thread_id"] = int(str(topic_id).strip())
+    elif TELEGRAM_TOPIC_ID.isdigit():
+        payload["message_thread_id"] = int(TELEGRAM_TOPIC_ID)
+
+    print("TG_SEND chat_id=", TELEGRAM_CHAT_ID,
+      "thread=", payload.get("message_thread_id"),
+      flush=True)        
+
+    r = requests.post(_tg_api_url("sendMessage", TELEGRAM_BOT_TOKEN), json=payload, timeout=15)
+    r.raise_for_status()
+
+
+def _fmt_price(x: float) -> str:
+    x = float(x)
+    return f"{x:,.5f}" if x < 1 else f"{x:,.2f}"
+
+
+def format_symbol_report(analysis: dict) -> str:
+    symbol = analysis.get("symbol", "-")
+    price = analysis.get("price")
+    macro = analysis.get("macro_trend")
+    rsi14 = analysis.get("rsi14")
+    vol = analysis.get("volume_spike")
+    mtf = analysis.get("mtf") or {}
+    mode = analysis.get("mode")
+    size_mult = analysis.get("position_size_mult")
+
+    wl = (analysis.get("wave_label") or {}).get("label") or {}
+    pivots = wl.get("pivots") or []
+
+    scenarios = analysis.get("scenarios", []) or []
+    if not scenarios:
+        return f"{symbol} — ไม่มีสัญญาณที่ผ่านเงื่อนไข"
+
+    sc = scenarios[0]
+    trade = sc.get("trade_plan", {}) or {}
+
+    entry = trade.get("entry")
+    sl = trade.get("sl")
+    tp1 = trade.get("tp1")
+    tp2 = trade.get("tp2")
+    tp3 = trade.get("tp3")
+
+    sr = analysis.get("sr") or {}
+    support = (sr.get("support") or {}).get("level")
+    resist = (sr.get("resist") or {}).get("level")
+
+    # Pivot list format
+    pivot_lines = []
+    for i, p in enumerate(pivots, start=1):
+        pivot_lines.append(f"{i}) {p.get('type')} { _fmt_price(p.get('price')) }")
+    pivot_text = "\n".join(pivot_lines) if pivot_lines else "-"
+
+    # ===== ✅ NEW: สถานะ/เหตุผลการบล็อก =====
+    status = (sc.get("status") or "").upper()  # READY / WAIT / BLOCKED (จาก wave_engine)
+    blocked = sc.get("blocked_reasons") or []
+
+    # fallback เผื่อยังไม่มี status
+    allowed = bool(trade.get("allowed_to_trade", True))
+    triggered = bool(trade.get("triggered", False))
+
+    if not status:
+        if triggered and allowed:
+            status = "READY"
+        elif not allowed:
+            status = "BLOCKED"
+        else:
+            status = "WAIT"
+
+    if status == "BLOCKED" and not blocked:
+        # fallback reasons จาก flag เดิม
+        if sc.get("mtf_ok") is False or trade.get("mtf_ok") is False:
+            blocked.append("h4_confirm_block")
+        if sc.get("context_allowed") is False or trade.get("context_allowed") is False:
+            blocked.append("context_gate_block")
+        if sc.get("weekly_ok") is False or trade.get("weekly_ok") is False:
+            blocked.append("weekly_permit_block")
+
+    reason_map = {
+        "h4_confirm_block": "❌ 4H ยังไม่ยืนยัน",
+        "context_gate_block": "❌ Context gate บล็อก",
+        "weekly_permit_block": "❌ Weekly permit บล็อก",
+    }
+    blocked_lines = []
+    for r in blocked:
+        blocked_lines.append(reason_map.get(str(r), f"❌ {r}"))
+    blocked_text = "\n".join(blocked_lines) if blocked_lines else "-"
+
+    if status == "READY":
+        status_line = "พร้อมเข้า (TRIGGERED)"
+    elif status == "WAIT":
+        status_line = "รอการยืนยัน (WAIT)"
+    else:
+        status_line = "ถูกบล็อก (BLOCKED)"
+
+    # ===== report text =====
+    text = f"""
+════════════════════════════
+👑 VIP รายงานเชิงลึก — {symbol} (1D)
+อัปเดตเวลา 07:05 น.
+════════════════════════════
+
+📍 ราคาปัจจุบัน: {_fmt_price(price) if price else '-'}
+
+📊 ภาพรวมตลาด
+- แนวโน้มหลัก: {macro}
+- สภาพตลาด: {mode}
+- RSI14: {round(rsi14,1) if rsi14 else '-'}
+- ปริมาณซื้อขายสูงผิดปกติ: {bool(vol)}
+
+📚 มุมมองหลายไทม์เฟรม
+- รายสัปดาห์: {mtf.get('weekly_trend')}
+- 4 ชั่วโมงยืนยัน: {mtf.get('h4_confirm_long') or mtf.get('h4_confirm_short')}
+
+────────────────────
+🧠 โครงสร้าง Elliott Wave
+รูปแบบล่าสุด: {wl.get('pattern')}
+
+ลำดับจุดกลับตัว (Pivot)
+{pivot_text}
+
+────────────────────
+🎯 แผนการเทรด
+ทิศทาง: {sc.get('direction')}
+
+เข้าเมื่อราคาปิดเหนือ: {_fmt_price(entry) if entry else '-'}
+จุดตัดขาดทุน (SL): {_fmt_price(sl) if sl else '-'}
+
+เป้าหมายกำไร:
+TP1: {_fmt_price(tp1) if tp1 else '-'}
+TP2: {_fmt_price(tp2) if tp2 else '-'}
+TP3: {_fmt_price(tp3) if tp3 else '-'}
+
+ขนาดไม้แนะนำ: {size_mult} เท่า
+
+────────────────────
+📌 แนวรับ / แนวต้านใกล้เคียง
+แนวรับใกล้สุด: {_fmt_price(support) if support else '-'}
+แนวต้านใกล้สุด: {_fmt_price(resist) if resist else '-'}
+
+────────────────────
+สถานะสัญญาณ: {status_line}
+เหตุผล/เงื่อนไขที่ติด:
+{blocked_text}
+════════════════════════════
+""".strip()
+
+    footer = "\n\n────────────────────\n🔵 SYSTEM: ELLIOTT-WAVE\nEngine: 1D\n"
+    return text + footer
+===== app/state/__init__.py =====
+
+===== app/state/position_manager.py =====
+import json
+import logging
+import sqlite3
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+# ✅ FIX: ใช้ SQLite แทน JSON file
+DB_PATH = Path("positions.db")
+
+
+def _get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_db() -> None:
+    with _get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS positions (
+                key TEXT PRIMARY KEY,
+                data TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+# เรียก init ตอน import
+_init_db()
+
+
+@dataclass
+class Position:
+    symbol: str
+    timeframe: str
+    direction: str
+    entry: float
+    sl: float
+    tp1: float
+    tp2: float
+    tp3: float
+    status: str
+    tp1_hit: bool = False
+    tp2_hit: bool = False
+    tp3_hit: bool = False
+    sl_hit: bool = False
+    opened_at: str = ""
+    closed_at: str = ""
+    closed_reason: str = ""
+
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _key(symbol: str, timeframe: str) -> str:
+    return f"{symbol}:{timeframe}".upper()
+
+
+def _load_position(key: str) -> Optional[Dict]:
+    try:
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT data FROM positions WHERE key = ?", (key,)
+            ).fetchone()
+            if row:
+                return json.loads(row["data"])
+            return None
+    except Exception as e:
+        logger.error(f"_load_position {key} error: {e}")
+        return None
+
+
+def _save_position(key: str, data: Dict) -> None:
+    try:
+        with _get_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO positions (key, data) VALUES (?, ?)",
+                (key, json.dumps(data, ensure_ascii=False))
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"_save_position {key} error: {e}")
+
+
+def get_active(symbol: str, timeframe: str) -> Optional[Position]:
+    try:
+        k = _key(symbol, timeframe)
+        raw = _load_position(k)
+        if not raw:
+            return None
+        pos = Position(**raw)
+        if pos.status == "ACTIVE":
+            return pos
+        return None
+    except Exception as e:
+        logger.error(f"get_active {symbol} error: {e}")
+        return None
+
+
+def lock_new_position(
+    symbol: str, timeframe: str, direction: str, trade_plan: Dict
+) -> bool:
+    try:
+        k = _key(symbol, timeframe)
+        raw = _load_position(k)
+        if raw and raw.get("status") == "ACTIVE":
+            return False
+
+        pos = Position(
+            symbol=symbol,
+            timeframe=timeframe,
+            direction=direction,
+            entry=float(trade_plan["entry"]),
+            sl=float(trade_plan["sl"]),
+            tp1=float(trade_plan["tp1"]),
+            tp2=float(trade_plan["tp2"]),
+            tp3=float(trade_plan["tp3"]),
+            status="ACTIVE",
+            opened_at=_now_iso(),
+        )
+
+        _save_position(k, asdict(pos))
+        return True
+    except Exception as e:
+        logger.error(f"lock_new_position {symbol} error: {e}")
+        return False
+
+
+def update_from_price(
+    symbol: str, timeframe: str, price: float
+) -> Tuple[Optional[Position], Dict]:
+    try:
+        k = _key(symbol, timeframe)
+        raw = _load_position(k)
+        if not raw:
+            return None, {}
+
+        pos = Position(**raw)
+        if pos.status != "ACTIVE":
+            return pos, {}
+
+        p = float(price)
+        events = {
+            "tp1": False, "tp2": False, "tp3": False,
+            "sl": False, "closed": False, "closed_reason": ""
+        }
+
+        if pos.direction == "LONG":
+            if (not pos.tp1_hit) and p >= pos.tp1:
+                pos.tp1_hit = True
+                events["tp1"] = True
+            if (not pos.tp2_hit) and p >= pos.tp2:
+                pos.tp2_hit = True
+                events["tp2"] = True
+            if (not pos.tp3_hit) and p >= pos.tp3:
+                pos.tp3_hit = True
+                events["tp3"] = True
+            if (not pos.sl_hit) and p <= pos.sl:
+                pos.sl_hit = True
+                events["sl"] = True
+        else:
+            if (not pos.tp1_hit) and p <= pos.tp1:
+                pos.tp1_hit = True
+                events["tp1"] = True
+            if (not pos.tp2_hit) and p <= pos.tp2:
+                pos.tp2_hit = True
+                events["tp2"] = True
+            if (not pos.tp3_hit) and p <= pos.tp3:
+                pos.tp3_hit = True
+                events["tp3"] = True
+            if (not pos.sl_hit) and p >= pos.sl:
+                pos.sl_hit = True
+                events["sl"] = True
+
+        if pos.sl_hit and pos.status == "ACTIVE":
+            pos.status = "CLOSED"
+            pos.closed_at = _now_iso()
+            pos.closed_reason = "SL"
+            events["closed"] = True
+            events["closed_reason"] = "SL"
+        elif pos.tp3_hit and pos.status == "ACTIVE":
+            pos.status = "CLOSED"
+            pos.closed_at = _now_iso()
+            pos.closed_reason = "TP3"
+            events["closed"] = True
+            events["closed_reason"] = "TP3"
+
+        _save_position(k, asdict(pos))
+        return pos, events
+
+    except Exception as e:
+        logger.error(f"update_from_price {symbol} error: {e}")
+        return None, {}
+===== app/trading/__init__.py =====
+# trading module - ยังไม่เปิดใช้งาน
+
+===== app/trading/binance_trader.py =====
+# app/trading/binance_trader.py
+# ติดต่อ Binance Futures API
+
+import os
+import time
+import hashlib
+import hmac
+import requests
+from typing import Any
+from pathlib import Path
+from dotenv import load_dotenv
+
+from decimal import Decimal, ROUND_DOWN
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=False)
+
+FUTURES_URL = "https://fapi.binance.com"
+
+BINANCE_POSITION_MODE = (os.getenv("BINANCE_POSITION_MODE") or "ONEWAY").strip().upper()
+IS_HEDGE_MODE = BINANCE_POSITION_MODE == "HEDGE"
+
+_EXCHANGE_INFO_CACHE: dict[str, Any] | None = None
+_EXCHANGE_INFO_TS: float = 0.0
+_EXCHANGE_INFO_TTL_SEC: int = 60
+
+
+def _get_exchange_info() -> dict[str, Any]:
+    global _EXCHANGE_INFO_CACHE, _EXCHANGE_INFO_TS
+    now = time.time()
+    if _EXCHANGE_INFO_CACHE is not None and (now - _EXCHANGE_INFO_TS) < _EXCHANGE_INFO_TTL_SEC:
+        return _EXCHANGE_INFO_CACHE
+    r = requests.get(f"{FUTURES_URL}/fapi/v1/exchangeInfo", timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    _EXCHANGE_INFO_CACHE = data
+    _EXCHANGE_INFO_TS = now
+    return data
+
+
+def _get_lot_step(symbol: str) -> tuple[float, float]:
+    info = _get_exchange_info()
+    for s in info.get("symbols", []):
+        if s.get("symbol") == symbol:
+            for f in s.get("filters", []):
+                if f.get("filterType") == "LOT_SIZE":
+                    return float(f.get("stepSize", 0)), float(f.get("minQty", 0))
+    return 0.0, 0.0
+
+def adjust_quantity(symbol: str, quantity: float) -> float:
+    step, min_qty = _get_lot_step(symbol)
+    if step <= 0:
+        return float(quantity)
+
+    q = Decimal(str(quantity))
+    step_d = Decimal(str(step))
+    steps = (q / step_d).to_integral_value(rounding=ROUND_DOWN)
+    adj = steps * step_d
+
+    if min_qty > 0 and adj < Decimal(str(min_qty)):
+        return 0.0
+
+    return float(adj)
+
+def adjust_price(symbol: str, price: float) -> float:
+    info = _get_exchange_info()
+    for s in info.get("symbols", []):
+        if s.get("symbol") == symbol:
+            for f in s.get("filters", []):
+                if f.get("filterType") == "PRICE_FILTER":
+                    tick = float(f.get("tickSize", 0))
+                    if tick > 0:
+                        p = Decimal(str(price))
+                        t = Decimal(str(tick))
+                        steps = (p / t).to_integral_value(rounding=ROUND_DOWN)
+                        return float(steps * t)
+    return float(price)
+
+
+def _get_keys() -> tuple[str, str]:
+    api_key = os.getenv("BINANCE_API_KEY", "")
+    secret = os.getenv("BINANCE_SECRET_KEY", "")
+    return api_key, secret
+
+
+def _sign(params: dict[str, Any], secret: str) -> str:
+    query = "&".join(f"{k}={v}" for k, v in params.items())
+    return hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+
+
+def get_balance() -> float:
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {"timestamp": int(time.time() * 1000)}
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.get(f"{FUTURES_URL}/fapi/v2/balance", params=params, headers=headers, timeout=10)
+    r.raise_for_status()
+    for asset in r.json():
+        if asset.get("asset") == "USDT":
+            balance = float(asset["balance"])
+            print(f"✅ Binance เชื่อมต่อสำเร็จ | ยอด USDT = {balance}", flush=True)
+            return balance
+    return 0.0
+
+
+def open_market_order(symbol: str, side: str, quantity: float) -> dict:
+    api_key, secret = _get_keys()
+    quantity = adjust_quantity(symbol, quantity)
+    if quantity <= 0:
+        raise ValueError(f"quantity too small after step adjust: {symbol}")
+    params: dict[str, Any] = {
+        "symbol":    symbol,
+        "side":      side,
+        "type":      "MARKET",
+        "quantity":  quantity,
+        "timestamp": int(time.time() * 1000),
+    }
+    if IS_HEDGE_MODE:
+        params["positionSide"] = "LONG" if side == "BUY" else "SHORT"
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
+    print(f"Binance response: {r.text}", flush=True)
+    r.raise_for_status()
+    return r.json()
+
+def set_stop_loss(symbol: str, side: str, quantity: float, sl_price: float) -> dict:
+    api_key, secret = _get_keys()
+
+    open_side = (side or "").upper()
+    if open_side not in ("BUY", "SELL"):
+        raise ValueError(f"invalid side(open_side): {side}")
+
+    close_side = "SELL" if open_side == "BUY" else "BUY"
+    position_side = "LONG" if open_side == "BUY" else "SHORT"
+
+    # 🔥 ปรับ precision ก่อน
+    sl_price = adjust_price(symbol, sl_price)
+
+    params: dict[str, Any] = {
+        "algoType":      "CONDITIONAL",
+        "symbol":        symbol,
+        "side":          close_side,
+        "type":          "STOP_MARKET",
+        "triggerPrice":  sl_price,
+        "closePosition": "true",
+        "workingType":   "CONTRACT_PRICE",
+        "timestamp":     int(time.time() * 1000),
+    }
+
+    if IS_HEDGE_MODE:
+        params["positionSide"] = position_side
+
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/algoOrder", params=params, headers=headers, timeout=10)
+    print(f"SL response: {r.text}", flush=True)
+    r.raise_for_status()
+    return r.json()
+
+def set_take_profit(symbol: str, side: str, quantity: float, tp_price: float) -> dict:
+    api_key, secret = _get_keys()
+
+    open_side = (side or "").upper()
+    if open_side not in ("BUY", "SELL"):
+        raise ValueError(f"invalid side(open_side): {side}")
+
+    close_side = "SELL" if open_side == "BUY" else "BUY"
+    position_side = "LONG" if open_side == "BUY" else "SHORT"
+
+    # 🔥 ปรับ precision ก่อน
+    tp_price = adjust_price(symbol, tp_price)
+
+    params: dict[str, Any] = {
+        "algoType":      "CONDITIONAL",
+        "symbol":        symbol,
+        "side":          close_side,
+        "type":          "TAKE_PROFIT_MARKET",
+        "triggerPrice":  tp_price,
+        "closePosition": "true",
+        "workingType":   "CONTRACT_PRICE",
+        "timestamp":     int(time.time() * 1000),
+    }
+
+    if IS_HEDGE_MODE:
+        params["positionSide"] = position_side
+
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/algoOrder", params=params, headers=headers, timeout=10)
+    print(f"TP response: {r.text}", flush=True)
+    r.raise_for_status()
+    return r.json()
+
+def set_leverage(symbol: str, leverage: int = 10) -> None:
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {
+        "symbol":    symbol,
+        "leverage":  leverage,
+        "timestamp": int(time.time() * 1000),
+    }
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/leverage", params=params, headers=headers, timeout=10)
+    r.raise_for_status()
+
+
+def set_margin_type(symbol: str, margin_type: str = "ISOLATED") -> None:
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {
+        "symbol":     symbol,
+        "marginType": margin_type,
+        "timestamp":  int(time.time() * 1000),
+    }
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.post(f"{FUTURES_URL}/fapi/v1/marginType", params=params, headers=headers, timeout=10)
+    if r.status_code == 400 and "No need to change" in r.text:
+        return
+    r.raise_for_status()
+
+
+def get_open_positions() -> list:
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {"timestamp": int(time.time() * 1000)}
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.get(f"{FUTURES_URL}/fapi/v2/positionRisk", params=params, headers=headers, timeout=10)
+    r.raise_for_status()
+    positions = r.json()
+    return [p for p in positions if float(p.get("positionAmt", 0)) != 0]
+
+
+def cancel_order(symbol: str, order_id: int) -> dict:
+    api_key, secret = _get_keys()
+    params: dict[str, Any] = {
+        "symbol":    symbol,
+        "orderId":   order_id,
+        "timestamp": int(time.time() * 1000),
+    }
+    params["signature"] = _sign(params, secret)
+    headers = {"X-MBX-APIKEY": api_key}
+    r = requests.delete(f"{FUTURES_URL}/fapi/v1/order", params=params, headers=headers, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+===== app/trading/position_sizer.py =====
+# app/trading/position_sizer.py
+
+def calculate_quantity(balance: float, risk_pct: float, entry: float, sl: float) -> float:
+    """
+    balance  = เงินในพอร์ต (USDT)
+    risk_pct = % เสี่ยงต่อไม้ เช่น 0.5% = 0.005
+    entry    = ราคาเข้า
+    sl       = stop loss
+    return   = จำนวนเหรียญ (qty)
+    """
+
+    risk_amount = balance * risk_pct
+    sl_distance = abs(entry - sl)
+
+    if sl_distance <= 0:
+        return 0.0
+
+    qty = risk_amount / sl_distance
+    return round(qty, 6)
+===== app/trading/trade_executor.py =====
+# app/trading/trade_executor.py
+
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=False)
+
+import os
+DRY_RUN = os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
+
+from app.trading.binance_trader import (
+    get_balance,
+    open_market_order,
+    set_stop_loss,
+    set_take_profit,
+    set_leverage,
+    set_margin_type,
+    adjust_quantity,
+)
+
+from app.trading.position_sizer import calculate_quantity
+from app.state.position_manager import lock_new_position, get_active
+from app.config.wave_settings import TIMEFRAME
+
+RISK_PCT = 0.005  # เสี่ยง 0.5% ต่อไม้ (ลด DD จาก ~106% เหลือ ~26.7%)
+MIN_RR_AFTER_FILL = 2.0  # RR ขั้นต่ำหลัง fill จริง (align with system MIN_RR)
+
+# ✅ ตั้ง “ขนาดไม้” รายเหรียญ (หน่วย: USDT notional)
+# ใส่เฉพาะเหรียญที่อยาก fix ไม้ชัด ๆ (ตัวอย่าง BTC ต้อง >= ~65 USDT เพื่อให้ qty >= 0.001)
+FIXED_NOTIONAL_USDT = {
+    "BTCUSDT": 70.0,
+}
+
+def _get_actual_entry(order: dict, entry_est: float) -> float:
+    """
+    ดึง fill price จริงจาก order response
+    ลำดับ: avgPrice → fills[] weighted avg → entry_est (fallback)
+    """
+    avg = float(order.get("avgPrice") or 0)
+    if avg > 0:
+        return avg
+
+    fills = order.get("fills") or []
+    if fills:
+        total_qty = sum(float(f["qty"]) for f in fills)
+        if total_qty > 0:
+            return sum(float(f["price"]) * float(f["qty"]) for f in fills) / total_qty
+
+    return entry_est
+
+
+def _recalculate_plan(
+    direction: str,
+    actual_entry: float,
+    sl: float,
+    tp_rr: float,
+) -> dict:
+    """
+    คำนวณ SL/TP ใหม่จาก actual_entry
+    - SL คงเป็น technical level เดิม (ไม่ขยับ)
+    - TP recalculate จาก actual_entry × tp_rr ratio เดิม
+    """
+    direction = direction.upper()
+    risk = abs(actual_entry - sl)
+
+    if risk <= 0:
+        return {"valid": False, "reason": "risk=0 (entry==sl)"}
+
+    rr = abs(tp_rr)
+
+    if direction == "LONG":
+        tp1 = actual_entry + risk * 1.0
+        tp2 = actual_entry + risk * rr
+        tp3 = actual_entry + risk * 2.0
+    else:
+        tp1 = actual_entry - risk * 1.0
+        tp2 = actual_entry - risk * rr
+        tp3 = actual_entry - risk * 2.0
+
+    actual_rr = abs(tp2 - actual_entry) / risk
+
+    return {
+        "valid": True,
+        "entry": actual_entry,
+        "sl":    sl,
+        "tp1":   tp1,
+        "tp2":   tp2,
+        "tp3":   tp3,
+        "rr":    round(actual_rr, 2),
+        "risk":  round(risk, 6),
+    }
+
+
+def execute_signal(signal: dict) -> bool:
+    symbol     = signal["symbol"]
+    direction  = signal["direction"]
+    trade_plan = signal["trade_plan"]
+
+    entry_est = float(trade_plan["entry"])
+    sl_orig   = float(trade_plan["sl"])
+    tp2_orig  = float(trade_plan["tp2"])
+
+    open_side = "BUY" if direction == "LONG" else "SELL"
+
+    # ── กันเปิดซ้ำ ──
+    if get_active(symbol, TIMEFRAME):
+        print(f"⚠️ [{symbol}] มี position อยู่แล้ว")
+        return False
+
+    # ✅ DRY RUN
+    if DRY_RUN:
+        balance = float(signal.get("balance") or os.getenv("DRY_BALANCE", "178"))
+        quantity = calculate_quantity(balance, RISK_PCT, entry_est, sl_orig)
+
+        if quantity <= 0:
+            print(f"❌ [{symbol}] quantity = 0")
+            return False
+
+        print("🧪 DRY_RUN=1 → ไม่ยิงออเดอร์จริง")
+        print(f"[{symbol}] side={open_side} balance={balance} qty={quantity} entry_est={entry_est} sl={sl_orig} tp2={tp2_orig}")
+        return True
+
+    # ── ของจริง ──
+    balance  = get_balance()
+    # ── เลือกวิธีคุมขนาดไม้ ──
+    # 1) ถ้ามี FIXED_NOTIONAL_USDT → ใช้ notional/entry
+    # 2) ไม่งั้น → ใช้ risk-based sizing เดิม
+    fixed_notional = FIXED_NOTIONAL_USDT.get(symbol)
+    if fixed_notional is not None:
+        quantity = fixed_notional / entry_est if entry_est > 0 else 0.0
+    else:
+        quantity = calculate_quantity(balance, RISK_PCT, entry_est, sl_orig)
+
+    if quantity <= 0:
+        print(f"❌ [{symbol}] quantity = 0")
+        return False
+
+    # ---- CAP SIZE BY MARGIN ----
+    LEVERAGE = 10
+    MAX_MARGIN_PCT = 0.10
+
+    max_notional = balance * MAX_MARGIN_PCT * LEVERAGE
+    notional = quantity * entry_est
+
+    if notional > max_notional and entry_est > 0:
+        quantity = round(max_notional / entry_est, 6)
+
+    # ── เตรียม leverage / margin ──
+    set_margin_type(symbol, "ISOLATED")
+    set_leverage(symbol, LEVERAGE)
+
+    # ── กัน quantity เล็กจนปรับแล้วเป็น 0 ──
+    adj_qty = adjust_quantity(symbol, quantity)
+    if adj_qty <= 0:
+        print(f"❌ [{symbol}] skip: qty too small after adjust (raw={quantity})", flush=True)
+        return False
+    quantity = adj_qty
+
+    # ── เปิดออเดอร์ ──
+    order = open_market_order(symbol, open_side, quantity)
+    order_id = order.get("orderId")
+
+    if not order_id:
+        print(f"❌ [{symbol}] เปิดออเดอร์ไม่สำเร็จ")
+        return False
+
+    # ── ดึง fill price จริง ──
+    actual_entry = _get_actual_entry(order, entry_est)
+    slip_pct = abs(actual_entry - entry_est) / entry_est * 100 if entry_est > 0 else 0
+    print(f"✅ [{symbol}] fill = {actual_entry:.6f} | slip = {slip_pct:.3f}%")
+
+    risk_est = abs(entry_est - sl_orig)
+    tp_rr = abs(tp2_orig - entry_est) / risk_est if risk_est > 0 else 1.618
+
+    plan = _recalculate_plan(
+        direction=direction,
+        actual_entry=actual_entry,
+        sl=sl_orig,
+        tp_rr=tp_rr,
+    )
+
+    # ... หลังจากได้ plan แล้ว
+
+    if not plan["valid"]:
+        print(f"❌ [{symbol}] plan invalid → emergency close")
+        _emergency_close(symbol, direction, quantity)
+        return False
+
+    if plan["rr"] < MIN_RR_AFTER_FILL:
+        print(f"❌ [{symbol}] RR ต่ำเกิน → emergency close")
+        _emergency_close(symbol, direction, quantity)
+        return False
+
+    sl_final = plan["sl"]
+
+    # ✅ ให้ TP ที่ยิงจริง = เป้าที่ไกลกว่าเสมอ (กัน tp3 < tp2)
+    if direction.upper() == "LONG":
+        tp_final = max(float(plan["tp2"]), float(plan["tp3"]))
+    else:
+        tp_final = min(float(plan["tp2"]), float(plan["tp3"]))
+
+    print(f"📐 RR={plan['rr']} | SL={sl_final:.6f} | TP={tp_final:.6f}")
+
+    try:
+        set_stop_loss(symbol, open_side, quantity, sl_final)
+        print("✅ SL set")
+    except Exception:
+        print("❌ SL fail → emergency close")
+        _emergency_close(symbol, direction, quantity)
+        return False
+
+    try:
+        set_take_profit(symbol, open_side, quantity, tp_final)
+        print("✅ TP set")
+    except Exception:
+        print("❌ TP fail → emergency close")
+        _emergency_close(symbol, direction, quantity)
+        return False
+
+    lock_new_position(
+        symbol=symbol,
+        timeframe=TIMEFRAME,
+        direction=direction,
+        trade_plan={
+            "entry": actual_entry,
+            "sl":    sl_final,
+            "tp1":   float(plan["tp1"]),
+            "tp2":   float(plan["tp2"]),
+            "tp3":   float(tp_final),  # ✅ tp3 = TP ที่ยิงจริง
+            "rr":    float(plan["rr"]),
+            "risk":  float(plan["risk"]),
+        },
+    )
+
+    print(f"🟢 execute_signal สำเร็จ")
+    return True
+
+def _emergency_close(symbol: str, direction: str, quantity: float) -> None:
+    """ปิด position ทันทีด้วย market order ฝั่งตรงข้าม"""
+    close_side = "SELL" if direction == "LONG" else "BUY"
+    try:
+        open_market_order(symbol, close_side, quantity)
+        print(f"🔴 [{symbol}] ปิด position (emergency close) สำเร็จ")
+    except Exception as e:
+        print(f"🚨 [{symbol}] emergency close ล้มเหลว! ต้องปิดมือ: {e}")
+
