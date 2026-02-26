@@ -55,26 +55,19 @@ def _recalculate_plan(
     sl: float,
     tp_rr: float,
 ) -> dict:
-    """
-    คำนวณ SL/TP ใหม่จาก actual_entry
-    - SL คงเป็น technical level เดิม (ไม่ขยับ)
-    - TP recalculate จาก actual_entry × tp_rr ratio เดิม
-    """
     direction = direction.upper()
     risk = abs(actual_entry - sl)
 
     if risk <= 0:
         return {"valid": False, "reason": "risk=0 (entry==sl)"}
 
-    rr = abs(tp_rr)
-
     if direction == "LONG":
         tp1 = actual_entry + risk * 1.0
-        tp2 = actual_entry + risk * rr
+        tp2 = actual_entry + risk * 1.618
         tp3 = actual_entry + risk * 2.0
     else:
         tp1 = actual_entry - risk * 1.0
-        tp2 = actual_entry - risk * rr
+        tp2 = actual_entry - risk * 1.618
         tp3 = actual_entry - risk * 2.0
 
     actual_rr = abs(tp2 - actual_entry) / risk
@@ -89,7 +82,6 @@ def _recalculate_plan(
         "rr":    round(actual_rr, 2),
         "risk":  round(risk, 6),
     }
-
 
 def execute_signal(signal: dict) -> bool:
     symbol     = signal["symbol"]
