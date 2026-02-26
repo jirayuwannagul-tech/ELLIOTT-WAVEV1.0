@@ -361,4 +361,5 @@ if __name__ == "__main__":
         print("Manual Trend Watch Mode...")
         run_trend_watch_job(min_conf=65.0)
     else:
-        app.run(host="0.0.0.0", port=8080, debug=True)
+        debug = (os.getenv("FLASK_DEBUG") or "0").strip() == "1"
+        app.run(host="0.0.0.0", port=8080, debug=debug)

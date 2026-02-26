@@ -1,14 +1,14 @@
 # app/performance/metrics.py
-# อ่านข้อมูลจาก DB เดิม ไม่แตะไฟล์ใด
 from __future__ import annotations
 
+import os
 import json
 import math
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional
 
-DB_PATH = Path("positions.db")
+DB_PATH = Path(os.getenv("ELLIOTT_DB", "/var/lib/elliott/positions.db"))
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -35,28 +35,57 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
     closed = [p for p in positions if p.get("status") == "CLOSED"]
     active = [p for p in positions if p.get("status") == "ACTIVE"]
 
-    total_closed = len(closed)
-    wins = [p for p in closed if p.get("closed_reason") == "TP3"]
-    losses = [p for p in closed if p.get("closed_reason") == "SL"]
-
-    win_count = len(wins)
-    loss_count = len(losses)
-    winrate = round((win_count / total_closed) * 100, 2) if total_closed > 0 else 0.0
-
-    # R-multiple per trade (TP3 = +RR, SL = -1R)
+    # R-multiple per trade (Partial Exit 30/30/40, TP3=4R)
     r_multiples: List[float] = []
+
     for p in closed:
         entry = float(p.get("entry", 0) or 0)
         sl = float(p.get("sl", 0) or 0)
-        tp3 = float(p.get("tp3", 0) or 0)
+
         risk = abs(entry - sl)
         if risk <= 0:
             continue
-        if p.get("closed_reason") == "TP3":
-            rr = abs(tp3 - entry) / risk
-            r_multiples.append(rr)
-        elif p.get("closed_reason") == "SL":
-            r_multiples.append(-1.0)
+
+        # weights
+        w1, w2, w3 = 0.3, 0.3, 0.4
+
+        r = 0.0
+
+        # TP1
+        if p.get("tp1_hit"):
+            r += w1 * 1.0
+
+        # TP2
+        if p.get("tp2_hit"):
+            r += w2 * 2.0
+
+        # TP3
+        if p.get("tp3_hit"):
+            r += w3 * 4.0
+
+        # Remaining position hits SL
+        if p.get("sl_hit"):
+            remaining = 1.0
+            if p.get("tp1_hit"):
+                remaining -= w1
+            if p.get("tp2_hit"):
+                remaining -= w2
+            if p.get("tp3_hit"):
+                remaining -= w3
+
+            r += remaining * (-1.0)
+
+        r_multiples.append(round(r, 3))
+
+    total_closed = len(closed)
+    total_scored = len(r_multiples)
+
+    wins = [r for r in r_multiples if r > 0]
+    losses = [r for r in r_multiples if r < 0]
+
+    win_count = len(wins)
+    loss_count = len(losses)
+    winrate = round((win_count / total_scored) * 100, 2) if total_scored > 0 else 0.0
 
     # Equity curve
     equity = 0.0
@@ -86,7 +115,7 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
     gross_loss = abs(sum(r for r in r_multiples if r < 0))
     profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 0.0
 
-    # Avg RR
+    # Avg R (ชื่อเดิม avg_rr)
     avg_rr = round(sum(r_multiples) / len(r_multiples), 2) if r_multiples else 0.0
 
     # Per symbol breakdown
@@ -107,6 +136,7 @@ def compute_metrics(positions: Optional[List[Dict]] = None) -> Dict:
 
     return {
         "total_closed": total_closed,
+        "total_scored": total_scored,
         "active": len(active),
         "win_count": win_count,
         "loss_count": loss_count,

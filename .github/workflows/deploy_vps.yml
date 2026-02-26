@@ -18,4 +18,19 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
           script: |
-            /usr/local/bin/deploy_elliott.sh
+            set -e
+
+            echo "== CD PROJECT =="
+            cd /root/ELLIOTT-WAVEV1.0
+
+            echo "== GIT PULL =="
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "== INSTALL REQUIREMENTS =="
+            pip3 install -r requirements.txt
+
+            echo "== RESTART SERVICE =="
+            systemctl restart elliott
+
+            echo "== DONE =="
