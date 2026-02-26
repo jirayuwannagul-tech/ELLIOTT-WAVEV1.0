@@ -219,9 +219,10 @@ def execute_signal(signal: dict) -> bool:
             "tp1":   float(plan["tp1"]),
             "tp2":   float(plan["tp2"]),
             "tp3":   float(tp_final),
-            "qty":   float(quantity),   # ✅ เพิ่ม
+            "qty":   float(quantity),
             "rr":    float(plan["rr"]),
             "risk":  float(plan["risk"]),
+            "balance_at_open": float(balance),
         },
     )
 
