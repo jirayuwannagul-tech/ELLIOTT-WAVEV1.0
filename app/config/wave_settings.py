@@ -16,6 +16,18 @@ SYMBOLS = [
     "GALAUSDT","ZILUSDT","DUSKUSDT",
 ]
 
+# --- Position sizing (fixed notional per trade) ---
+DEFAULT_NOTIONAL_USDT = 3.5
+
+# Override per symbol when DEFAULT is too small to pass Binance minQty/step.
+# NOTE: BTC needs a much larger notional because minQty is 0.001 BTC.
+NOTIONAL_MAP = {
+    "BTCUSDT": 70.0,
+    "BNBUSDT": 6.5,
+    "AVAXUSDT": 10.0,
+    "AAVEUSDT": 12.0,
+}
+
 FRACTAL_LEFT = 2
 FRACTAL_RIGHT = 2
 
