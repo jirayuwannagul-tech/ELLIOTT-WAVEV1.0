@@ -164,16 +164,16 @@ def build_trade_plan(
         # ✅ APPLY CAP (ให้ MAX_TP_R มีผลจริง)
         tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
 
-        rr = calculate_rr(entry, sl, tp1)
+        rr = calculate_rr(entry, sl, tp2)
         if rr >= min_rr:
             trade.update({
                 "entry": entry, "sl": sl,
                 "tp1": tp1, "tp2": tp2, "tp3": tp3,
                 "valid": True,
-                "reason": f"RR(TP1)={round(rr, 2)} ≥ {min_rr}",
+                "reason": f"RR(TP2)={round(rr, 2)} ≥ {min_rr}",
             })
         else:
-            trade["reason"] = f"RR(TP1) ต่ำ ({round(rr, 2)})"
+            trade["reason"] = f"RR(TP2) ต่ำ ({round(rr, 2)})"
         return trade
 
     # =========================
@@ -216,6 +216,12 @@ def build_trade_plan(
                 if resist and float(resist) < sl:
                     sl = float(resist)
 
+            # re-check SL distance AFTER sr adjustment
+            sl_err = _check_sl_distance(entry, sl, direction)
+            if sl_err:
+                trade["reason"] = f"ABC_DOWN(after SR): {sl_err}"
+                return trade                   
+
         else:  # ABC_UP
             l0 = float(pivots[0]["price"])
             h1 = float(pivots[1]["price"])
@@ -229,7 +235,7 @@ def build_trade_plan(
             entry = float(current_price)
             sl = l2
 
-            # SL distance check — ตรวจก่อน sr adjustment
+            # SL distance check — ก่อน SR
             sl_err = _check_sl_distance(entry, sl, direction)
             if sl_err:
                 trade["reason"] = f"ABC_UP: {sl_err}"
@@ -241,27 +247,34 @@ def build_trade_plan(
                 return trade
             tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
 
-            # sr adjustment
+            # SR adjustment
             if sr:
                 support = (sr.get("support") or {}).get("level")
                 if support and float(support) > sl:
                     sl = float(support)
 
-        # ✅ APPLY CAP หลัง sr adjustment เสร็จ (สำคัญ)
+            # ✅ re-check SL distance — หลัง SR
+            sl_err = _check_sl_distance(entry, sl, direction)
+            if sl_err:
+                trade["reason"] = f"ABC_UP(after SR): {sl_err}"
+                return trade
+
+        # cap TP3 หลัง SR (เหมือนเดิม)
         tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
 
-        rr = calculate_rr(entry, sl, tp1)
+        # ✅ RR gate ให้ตรงกับ execution: ใช้ TP2
+        rr = calculate_rr(entry, sl, tp2)
+
         if rr >= min_rr:
             trade.update({
                 "entry": entry, "sl": sl,
                 "tp1": tp1, "tp2": tp2, "tp3": tp3,
                 "valid": True,
-                "reason": f"RR(TP1)={round(rr, 2)} ≥ {min_rr} (fib+sr)",
+                "reason": f"RR(TP2)={round(rr, 2)} ≥ {min_rr} (fib+sr)",
             })
         else:
-            trade["reason"] = f"RR(TP1) ต่ำ ({round(rr, 2)})"
+            trade["reason"] = f"RR(TP2) ต่ำ ({round(rr, 2)})"
         return trade
-
     # =========================
     # IMPULSE
     # =========================
@@ -304,19 +317,25 @@ def build_trade_plan(
         trade["reason"] = "IMPULSE: direction ไม่ถูกต้อง"
         return trade
 
+    # re-check SL distance AFTER sr adjustment
+    sl_err = _check_sl_distance(entry, sl, direction)
+    if sl_err:
+        trade["reason"] = f"IMPULSE(after SR): {sl_err}"
+        return trade
+
     # ✅ APPLY CAP หลัง sr adjustment เสร็จ (สำคัญ)
     tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
 
-    rr = calculate_rr(entry, sl, tp1)
+    rr = calculate_rr(entry, sl, tp2)
     if rr >= min_rr:
         trade.update({
             "entry": entry, "sl": sl,
             "tp1": tp1, "tp2": tp2, "tp3": tp3,
             "valid": True,
-            "reason": f"RR(TP1)={round(rr, 2)} ≥ {min_rr} (fib+sr)",
+            "reason": f"RR(TP2)={round(rr, 2)} ≥ {min_rr} (fib+sr)",
         })
     else:
-        trade["reason"] = f"RR(TP1) ต่ำ ({round(rr, 2)})"
+        trade["reason"] = f"RR(TP2) ต่ำ ({round(rr, 2)})"
 
     return trade
 
@@ -343,12 +362,12 @@ def recalculate_from_fill(
         tp2 = actual_entry - risk * original_tp_rr
         tp3 = actual_entry - risk * 2.0
 
-    rr = calculate_rr(actual_entry, original_sl, tp1)
+    rr = calculate_rr(actual_entry, original_sl, tp2)
 
     if rr < min_rr:
         return {
             "valid": False,
-            "reason": f"RR หลัง fill ต่ำ ({round(rr,2)} < {min_rr})",
+            "reason": f"RR(TP2) หลัง fill ต่ำ ({round(rr,2)} < {min_rr})",
             "actual_entry": actual_entry,
             "sl": original_sl,
             "rr": round(rr, 2),

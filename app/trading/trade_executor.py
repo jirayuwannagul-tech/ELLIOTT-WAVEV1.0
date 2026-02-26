@@ -179,7 +179,7 @@ def execute_signal(signal: dict) -> bool:
         tp_rr=tp_rr,
     )
 
-        # ... หลังจากได้ plan แล้ว
+    # ... หลังจากได้ plan แล้ว
 
     if not plan["valid"]:
         print(f"❌ [{symbol}] plan invalid → emergency close")
@@ -213,7 +213,9 @@ def execute_signal(signal: dict) -> bool:
         set_take_profit(symbol, open_side, quantity, tp_final)
         print("✅ TP set")
     except Exception:
-        print("⚠️ TP fail แต่ SL ยังอยู่")
+        print("❌ TP fail → emergency close")
+        _emergency_close(symbol, direction, quantity)
+        return False
 
     lock_new_position(
         symbol=symbol,
