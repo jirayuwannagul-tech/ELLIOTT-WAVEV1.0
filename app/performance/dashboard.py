@@ -1,6 +1,4 @@
 # app/performance/dashboard.py
-# เพิ่มไฟล์ใหม่ ไม่แตะไฟล์เดิม
-# วิธีใช้: import แล้ว register blueprint ใน app/main.py
 from __future__ import annotations
 
 import os
@@ -41,7 +39,6 @@ PERF_HTML = """<!DOCTYPE html>
     padding: 24px;
   }
 
-  /* grid noise bg */
   body::before {
     content: '';
     position: fixed; inset: 0;
@@ -73,7 +70,6 @@ PERF_HTML = """<!DOCTYPE html>
 
   header span { color: var(--dim); font-size: 11px; }
 
-  /* KPI grid */
   .kpi-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -110,7 +106,6 @@ PERF_HTML = """<!DOCTYPE html>
   .kpi-value.yellow { color: var(--yellow); }
   .kpi-value.accent { color: var(--accent); }
 
-  /* panels */
   .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
 
   @media (max-width: 700px) { .panels { grid-template-columns: 1fr; } }
@@ -132,12 +127,10 @@ PERF_HTML = """<!DOCTYPE html>
     border-bottom: 1px solid var(--border);
   }
 
-  /* equity chart */
   .chart-wrap { height: 120px; position: relative; }
 
   canvas { width: 100% !important; height: 100% !important; }
 
-  /* symbol table */
   table { width: 100%; border-collapse: collapse; }
   th { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); }
   td { padding: 8px 8px; border-bottom: 1px solid rgba(26,40,64,0.5); font-size: 12px; }
@@ -146,7 +139,6 @@ PERF_HTML = """<!DOCTYPE html>
   .pill.win { background: rgba(0,255,136,0.15); color: var(--green); }
   .pill.loss { background: rgba(255,60,90,0.15); color: var(--red); }
 
-  /* positions log */
   .log { max-height: 280px; overflow-y: auto; }
   .log-row {
     display: flex;
@@ -177,7 +169,6 @@ PERF_HTML = """<!DOCTYPE html>
     <span>Live จาก DB | ไม่ใช่ Backtest</span>
   </header>
 
-  <!-- KPI -->
   <div class="kpi-grid">
     <div class="kpi green">
       <div class="kpi-label">Winrate</div>
@@ -219,9 +210,12 @@ PERF_HTML = """<!DOCTYPE html>
       <div class="kpi-label">Avg R/Trade</div>
       <div class="kpi-value accent">AVG_RR_VAL R</div>
     </div>
+    <div class="kpi">
+      <div class="kpi-label">Total PnL (USDT)</div>
+      <div class="kpi-value TOTAL_PNL_CLASS">TOTAL_PNL_VAL USDT</div>
+    </div>
   </div>
 
-  <!-- Chart + Symbol Table -->
   <div class="panels">
     <div class="panel">
       <div class="panel-title">Equity Curve (R)</div>
@@ -236,7 +230,6 @@ PERF_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Closed positions log -->
   <div class="panel">
     <div class="panel-title">ประวัติการเทรด (ล่าสุด 30 รายการ)</div>
     <div class="log">
@@ -270,7 +263,6 @@ if (curve.length > 0) {
   const toX = i => pad + (i / (curve.length - 1 || 1)) * (W - pad * 2);
   const toY = v => H - pad - ((v - min) / range) * (H - pad * 2);
 
-  // zero line
   ctx.beginPath();
   ctx.strokeStyle = 'rgba(74,96,128,0.5)';
   ctx.lineWidth = 1;
@@ -281,7 +273,6 @@ if (curve.length > 0) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // fill
   const grad = ctx.createLinearGradient(0, 0, 0, H);
   const lastVal = curve[curve.length - 1];
   const mainColor = lastVal >= 0 ? '#00ff88' : '#ff3c5a';
@@ -298,7 +289,6 @@ if (curve.length > 0) {
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // line
   ctx.beginPath();
   ctx.strokeStyle = mainColor;
   ctx.lineWidth = 2;
@@ -327,7 +317,6 @@ def performance_dashboard():
 
     m = compute_metrics()
 
-    # Symbol table
     sym_stats = m.get("symbol_stats") or {}
     if sym_stats:
         rows = ""
@@ -345,7 +334,6 @@ def performance_dashboard():
     else:
         sym_table = '<div class="empty">ยังไม่มีข้อมูล</div>'
 
-    # Log
     closed = list(reversed(m.get("closed_positions") or []))[:30]
     if closed:
         log_html = ""
@@ -367,9 +355,9 @@ def performance_dashboard():
     else:
         log_html = '<div class="empty">ยังไม่มีประวัติการเทรด</div>'
 
-    # Render
     total_r = m["total_r"]
     sharpe = m["sharpe_ratio"]
+    total_pnl = m["total_pnl_usdt"]
 
     html = PERF_HTML
     html = html.replace("WINRATE_VAL", str(m["winrate"]))
@@ -384,6 +372,8 @@ def performance_dashboard():
     html = html.replace("SHARPE_CLASS", "green" if sharpe >= 1 else ("yellow" if sharpe >= 0 else "red"))
     html = html.replace("PF_VAL", str(m["profit_factor"]))
     html = html.replace("AVG_RR_VAL", str(m["avg_rr"]))
+    html = html.replace("TOTAL_PNL_VAL", str(total_pnl))
+    html = html.replace("TOTAL_PNL_CLASS", "green" if total_pnl >= 0 else "red")
     html = html.replace("SYM_TABLE_PLACEHOLDER", sym_table)
     html = html.replace("LOG_PLACEHOLDER", log_html)
     html = html.replace("EQUITY_CURVE_JSON", str(m["equity_curve"]))
