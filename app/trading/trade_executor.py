@@ -179,6 +179,8 @@ def execute_signal(signal: dict) -> bool:
         tp_rr=tp_rr,
     )
 
+        # ... หลังจากได้ plan แล้ว
+
     if not plan["valid"]:
         print(f"❌ [{symbol}] plan invalid → emergency close")
         _emergency_close(symbol, direction, quantity)
@@ -189,26 +191,30 @@ def execute_signal(signal: dict) -> bool:
         _emergency_close(symbol, direction, quantity)
         return False
 
-    sl_final  = plan["sl"]
-    tp3_final = plan["tp3"]
+    sl_final = plan["sl"]
 
-    print(f"📐 RR={plan['rr']} | SL={sl_final:.6f} | TP3={tp3_final:.6f}")
+    # ✅ ให้ TP ที่ยิงจริง = เป้าที่ไกลกว่าเสมอ (กัน tp3 < tp2)
+    if direction.upper() == "LONG":
+        tp_final = max(float(plan["tp2"]), float(plan["tp3"]))
+    else:
+        tp_final = min(float(plan["tp2"]), float(plan["tp3"]))
+
+    print(f"📐 RR={plan['rr']} | SL={sl_final:.6f} | TP={tp_final:.6f}")
 
     try:
         set_stop_loss(symbol, open_side, quantity, sl_final)
-        print(f"✅ SL set")
-    except Exception as e:
-        print(f"❌ SL fail → emergency close")
+        print("✅ SL set")
+    except Exception:
+        print("❌ SL fail → emergency close")
         _emergency_close(symbol, direction, quantity)
         return False
 
     try:
-        set_take_profit(symbol, open_side, quantity, tp3_final)
-        print(f"✅ TP3 set")
-    except Exception as e:
-        print(f"⚠️ TP fail แต่ SL ยังอยู่")
+        set_take_profit(symbol, open_side, quantity, tp_final)
+        print("✅ TP set")
+    except Exception:
+        print("⚠️ TP fail แต่ SL ยังอยู่")
 
-    # ✅ แก้เป็น (plan มี tp1/tp2 อยู่แล้วจาก _recalculate_plan)
     lock_new_position(
         symbol=symbol,
         timeframe=TIMEFRAME,
@@ -216,9 +222,11 @@ def execute_signal(signal: dict) -> bool:
         trade_plan={
             "entry": actual_entry,
             "sl":    sl_final,
-            "tp1":   plan["tp1"],
-            "tp2":   plan["tp2"],
-            "tp3":   tp3_final,
+            "tp1":   float(plan["tp1"]),
+            "tp2":   float(plan["tp2"]),
+            "tp3":   float(tp_final),  # ✅ tp3 = TP ที่ยิงจริง
+            "rr":    float(plan["rr"]),
+            "risk":  float(plan["risk"]),
         },
     )
 
