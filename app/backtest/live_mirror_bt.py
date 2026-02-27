@@ -25,13 +25,18 @@ class Trade:
     opened_at: pd.Timestamp
     closed_at: pd.Timestamp
     exit_price: float
-    result: str  # "WIN" | "LOSS" | "FLAT"
+    result: str  # "WIN" | "WIN_P1" | "WIN_P2" | "LOSS" | "FLAT"
     r_multiple: float
 
-def _r_multiple(direction: str, entry: float, sl: float, exit_price: float) -> float:
+def _r_multiple(direction: str, entry: float, sl: float, exit_price: float, result: str = "") -> float:
     risk = abs(entry - sl)
     if risk <= 0:
         return 0.0
+
+    # partial win: 30/30/40
+    if result == "WIN_P1": return round(0.3 * 1.0, 3)                      # +0.3R
+    if result == "WIN_P2": return round(0.3 * 1.0 + 0.3 * 1.618, 3)       # +0.785R
+
     if direction.upper() == "LONG":
         return (exit_price - entry) / risk
     return (entry - exit_price) / risk
@@ -43,27 +48,48 @@ def _simulate_trade_on_forward_bars(
     entry: float,
     sl: float,
     tp: float,
+    tp1: float = 0.0,
+    tp2: float = 0.0,
 ) -> Tuple[int, float, str]:
     """
     Mirror live trade_executor.py:
     - วาง STOP_MARKET (SL) + TAKE_PROFIT_MARKET (TP3) เท่านั้น
-    - ไม่มี partial close TP1/TP2
+    - TP1 hit → ย้าย SL ไป BE → ถ้าโดน SL = WIN_P1
+    - TP2 hit → ถ้าโดน SL = WIN_P2
     - SL ชนก่อนเสมอในแท่งเดียวกัน (conservative)
     """
     direction = direction.upper()
+    tp1_hit = False
+    tp2_hit = False
 
     for j in range(i_open, len(df)):
         hi = float(df["high"].iloc[j])
         lo = float(df["low"].iloc[j])
 
         if direction == "LONG":
+            if tp1 > 0 and (not tp1_hit) and hi >= tp1:
+                tp1_hit = True
+                sl = entry  # ย้าย BE
+            if tp2 > 0 and tp1_hit and (not tp2_hit) and hi >= tp2:
+                tp2_hit = True
+
             if lo <= sl:
-                return j, sl, "LOSS"
+                if tp2_hit:   return j, sl, "WIN_P2"
+                elif tp1_hit: return j, sl, "WIN_P1"
+                else:         return j, sl, "LOSS"
             if hi >= tp:
                 return j, tp, "WIN"
         else:
+            if tp1 > 0 and (not tp1_hit) and lo <= tp1:
+                tp1_hit = True
+                sl = entry
+            if tp2 > 0 and tp1_hit and (not tp2_hit) and lo <= tp2:
+                tp2_hit = True
+
             if hi >= sl:
-                return j, sl, "LOSS"
+                if tp2_hit:   return j, sl, "WIN_P2"
+                elif tp1_hit: return j, sl, "WIN_P1"
+                else:         return j, sl, "LOSS"
             if lo <= tp:
                 return j, tp, "WIN"
 
@@ -74,7 +100,7 @@ def _streaks(results: List[str]) -> Dict[str, int]:
     cur_win = cur_loss = 0
 
     for r in results:
-        if r == "WIN":
+        if r in ("WIN", "WIN_P1", "WIN_P2"):
             cur_win += 1
             cur_loss = 0
         elif r == "LOSS":
@@ -292,7 +318,7 @@ def run_symbol_bt(
             dbg["plan_allowed"] += 1
 
             # NOTE: อย่าเชื่อ plan.triggered จาก live แบบ 1D close-only
-            # เพราะ live ใช้ “ราคาปัจจุบัน” ที่สามารถแตะ entry intrabar ได้
+            # เพราะ live ใช้ "ราคาปัจจุบัน" ที่สามารถแตะ entry intrabar ได้
             # ใน backtest เราจำลอง trigger ด้วยแท่งถัดไป (i+1) แบบ conservative:
             # - LONG: ถ้า high ของแท่งถัดไป >= entry → ถือว่า triggered
             # - SHORT: ถ้า low  ของแท่งถัดไป <= entry → ถือว่า triggered
@@ -343,9 +369,11 @@ def run_symbol_bt(
                 entry=entry_px,
                 sl=sl_f,
                 tp=tp3_f,
+                tp1=float(tp1) if tp1 is not None else 0.0,
+                tp2=float(tp2) if tp2 is not None else 0.0,
             )
 
-            r = _r_multiple(direction, entry_px, sl_f, float(exit_px))
+            r = _r_multiple(direction, entry_px, sl_f, float(exit_px), result=res)
 
             trades.append(
                 Trade(
@@ -376,9 +404,12 @@ def run_symbol_bt(
         return {"symbol": symbol, "trades": [], "summary": {"n": 0}}
 
     results = [t.result for t in trades]
-    wins   = sum(1 for r in results if r == "WIN")
+    wins   = sum(1 for r in results if r in ("WIN", "WIN_P1", "WIN_P2"))
     losses = sum(1 for r in results if r == "LOSS")
     flats  = sum(1 for r in results if r == "FLAT")
+    win_p1 = sum(1 for r in results if r == "WIN_P1")
+    win_p2 = sum(1 for r in results if r == "WIN_P2")
+    win_full = sum(1 for r in results if r == "WIN")
 
     total_r = sum(float(t.r_multiple) for t in trades)
     streak  = _streaks(results)
@@ -387,6 +418,9 @@ def run_symbol_bt(
     summary = {
         "n": len(trades),
         "wins": wins,
+        "wins_full": win_full,
+        "wins_p2": win_p2,
+        "wins_p1": win_p1,
         "losses": losses,
         "flats": flats,
         "winrate": round((wins / len(trades) * 100.0), 2) if trades else 0.0,
