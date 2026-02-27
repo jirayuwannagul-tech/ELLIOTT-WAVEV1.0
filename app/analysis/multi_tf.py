@@ -113,13 +113,29 @@ def get_mtf_summary(
     weekly_trend = trend_filter_ema(dfw)
     h4_trend = trend_filter_ema(df4) if (df4 is not None and len(df4) >= 250) else "NEUTRAL"
 
-    # Strict permit: 1W BULL => long only, 1W BEAR => short only, NEUTRAL => both
+    # ✅ เพิ่ม momentum check — EMA BULL ไม่พอ ต้องราคาวิ่งขึ้นจริงด้วย
+    # เช็คว่า close ปัจจุบัน > close 4 สัปดาห์ก่อน (momentum จริง)
     weekly_permit_long = True
     weekly_permit_short = True
+
+    if len(dfw) >= 5:
+        w_close_now  = float(dfw["close"].iloc[-1])
+        w_close_4ago = float(dfw["close"].iloc[-5])
+        w_momentum_bull = w_close_now > w_close_4ago   # ราคาสูงขึ้นใน 4 สัปดาห์
+        w_momentum_bear = w_close_now < w_close_4ago   # ราคาต่ำลงใน 4 สัปดาห์
+    else:
+        w_momentum_bull = True
+        w_momentum_bear = True
+
     if weekly_trend == "BULL":
         weekly_permit_short = False
+        # BULL แต่ไม่มี momentum → ปิด long ด้วย
+        if not w_momentum_bull:
+            weekly_permit_long = False
     elif weekly_trend == "BEAR":
         weekly_permit_long = False
+        if not w_momentum_bear:
+            weekly_permit_short = False
 
     # 4H confirm
     h4_confirm_long, h4_confirm_short, note4 = _h4_structure_confirm(df4)

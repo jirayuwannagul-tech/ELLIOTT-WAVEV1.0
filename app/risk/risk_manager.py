@@ -8,8 +8,8 @@ logger = logging.getLogger(__name__)
 
 # SL ต้องห่างจาก entry อย่างน้อยกี่ % ถึงจะ valid
 # ถ้าน้อยกว่านี้ = SL ใกล้เกินไป โดนง่ายมาก → reject
-MIN_SL_PCT = 1.0  # 1.0% of entry
-
+MIN_SL_PCT = 2.0
+MAX_SL_PCT = 8.0
 
 def calculate_rr(entry: float, sl: float, tp: float) -> float:
     risk = abs(entry - sl)
@@ -54,16 +54,13 @@ def _safe_fib_extension(
 
 
 def _check_sl_distance(entry: float, sl: float, direction: str) -> Optional[str]:
-    """
-    ตรวจว่า SL ห่างจาก entry พอไหม
-    ถ้าน้อยกว่า MIN_SL_PCT → คืน reason string
-    ถ้าผ่าน → คืน None
-    """
     if entry <= 0:
         return "entry <= 0"
     sl_pct = abs(entry - sl) / entry * 100
     if sl_pct < MIN_SL_PCT:
         return f"SL ใกล้เกินไป ({sl_pct:.2f}% < {MIN_SL_PCT}%)"
+    if sl_pct > MAX_SL_PCT:
+        return f"SL ไกลเกินไป ({sl_pct:.2f}% > {MAX_SL_PCT}%)"
     return None
 
 

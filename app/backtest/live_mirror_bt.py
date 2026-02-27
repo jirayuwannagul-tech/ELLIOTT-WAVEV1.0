@@ -366,7 +366,9 @@ def run_symbol_bt(
             dbg["trades"] += 1
 
             triggered_this_bar = True
-            skip_until = j_close + 1
+            # cool-down 5 bar หลัง loss กันเข้าซ้ำ pivot เดิม
+            cooldown = 5 if res == "LOSS" else 0
+            skip_until = j_close + 1 + cooldown
 
     if not trades:
         if bt_debug:
