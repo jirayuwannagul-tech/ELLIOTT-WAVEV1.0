@@ -10,8 +10,7 @@ from typing import Dict, Optional, Tuple, List
 logger = logging.getLogger(__name__)
 
 # ✅ ใช้ DB เดียวกับ performance (กำหนดผ่าน ENV ได้)
-DB_PATH = Path(os.getenv("ELLIOTT_DB", "/var/lib/elliott/positions.db"))
-
+DB_PATH = Path(os.getenv("ELLIOTT_DB", str(Path(__file__).resolve().parents[2] / "data" / "positions.db")))
 
 def _get_conn() -> sqlite3.Connection:
     # ensure directory exists
@@ -173,6 +172,59 @@ def lock_new_position(
         logger.error(f"lock_new_position {symbol} error: {e}")
         return False
 
+# =========================
+# ARMED SIGNAL (pending trigger)
+# =========================
+
+def _armed_key(symbol: str, timeframe: str) -> str:
+    return f"ARMED:{symbol}:{timeframe}".upper()
+
+def save_armed_signal(
+    symbol: str,
+    timeframe: str,
+    direction: str,
+    trigger_price: float,
+    trade_plan: Dict,
+    meta: Optional[Dict] = None,
+) -> None:
+    data = {
+        "type": "ARMED",
+        "symbol": symbol.upper(),
+        "timeframe": str(timeframe).upper(),
+        "direction": (direction or "").upper(),
+        "trigger_price": float(trigger_price),
+        "trade_plan": trade_plan or {},
+        "meta": meta or {},
+        "status": "ARMED",
+        "created_at": _now_iso(),
+    }
+    _save_position(_armed_key(symbol, timeframe), data)
+
+def get_armed_signal(symbol: str, timeframe: str) -> Optional[Dict]:
+    return _load_position(_armed_key(symbol, timeframe))
+
+def clear_armed_signal(symbol: str, timeframe: str) -> None:
+    try:
+        with _get_conn() as conn:
+            conn.execute("DELETE FROM positions WHERE key = ?", (_armed_key(symbol, timeframe),))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"clear_armed_signal {symbol} error: {e}")
+
+def list_armed_signals(timeframe: str) -> List[Dict]:
+    out: List[Dict] = []
+    try:
+        with _get_conn() as conn:
+            rows = conn.execute("SELECT key, data FROM positions WHERE key LIKE 'ARMED:%'").fetchall()
+        tf = str(timeframe).upper()
+        for r in rows:
+            raw = json.loads(r["data"])
+            if str(raw.get("timeframe", "")).upper() == tf and raw.get("status") == "ARMED":
+                out.append(raw)
+        return out
+    except Exception as e:
+        logger.error(f"list_armed_signals error: {e}")
+        return []
 
 def update_from_price(
     symbol: str, timeframe: str, price: float

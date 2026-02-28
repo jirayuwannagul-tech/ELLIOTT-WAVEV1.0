@@ -3,6 +3,8 @@ import os
 import time
 import threading
 
+from app.state.position_manager import list_armed_signals, clear_armed_signal
+from app.trading.trade_executor import execute_signal
 from app.config.wave_settings import TIMEFRAME
 from app.state.position_manager import list_active_positions, _key, _save_position, asdict  # type: ignore
 from app.trading.binance_trader import (
@@ -33,9 +35,54 @@ def _close_qty(symbol: str, close_side: str, qty: float, pos_side: str | None):
     close_market_reduce_only(symbol, close_side, qty, position_side=pos_side)
     return True
 
+def _armed_triggered(direction: str, mark: float, trigger: float) -> bool:
+    d = (direction or "").upper()
+    if d == "LONG":
+        return mark >= trigger
+    if d == "SHORT":
+        return mark <= trigger
+    return False
+
 def _loop():
     while True:
         try:
+            # =========================
+            # ARMED SIGNALS (pending trigger)
+            # =========================
+            armed = list_armed_signals(TIMEFRAME)
+            for s in armed:
+                sym = (s.get("symbol") or "").upper()
+                direction = (s.get("direction") or "").upper()
+                trigger_price = float(s.get("trigger_price") or 0.0)
+
+                if not sym or trigger_price <= 0:
+                    continue
+
+                # ถ้ามี position อยู่แล้ว → เคลียร์ ARMED กันซ้ำ
+                live = _find_live_position(sym)
+                if live:
+                    clear_armed_signal(sym, TIMEFRAME)
+                    continue
+
+                try:
+                    mark = get_mark_price(sym)
+                except Exception:
+                    mark = 0.0
+
+                if mark <= 0:
+                    continue
+
+                if _armed_triggered(direction, mark, trigger_price):
+                    payload = {
+                        "symbol": sym,
+                        "direction": direction,
+                        "trade_plan": s.get("trade_plan") or {},
+                        "meta": s.get("meta") or {},
+                    }
+                    execute_signal(payload)
+                    # เคลียร์เพื่อไม่ยิงซ้ำทุก 5 วิ
+                    clear_armed_signal(sym, TIMEFRAME)
+
             actives = list_active_positions(TIMEFRAME)
             for pos in actives:
                 sym = pos.symbol

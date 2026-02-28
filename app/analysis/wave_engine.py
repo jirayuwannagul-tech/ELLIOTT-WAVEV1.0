@@ -383,9 +383,10 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
                 elif stype == "ABC_DOWN":
                     trade_plan["triggered"] = last_close < (entry * (1 - float(ABC_CONFIRM_BUFFER)))
                 else:
-                    if direction == "LONG" and last_close <= entry:
+                    # FIX: entry = current_price → allow equality to trigger
+                    if direction == "LONG" and last_close < entry:
                         trade_plan["triggered"] = False
-                    elif direction == "SHORT" and last_close >= entry:
+                    elif direction == "SHORT" and last_close > entry:
                         trade_plan["triggered"] = False
                     else:
                         trade_plan["triggered"] = True
@@ -406,19 +407,18 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             f"valid={trade_plan.get('valid')} triggered={trade_plan.get('triggered')}"
         )
 
-        # === STATUS / BLOCK REASON ===
+       # === STATUS / BLOCK REASON ===
         blocked = []
         if not weekly_ok:
             blocked.append("weekly_permit_block")
-        if not mtf_ok:
-            blocked.append("h4_confirm_block")
+        # mtf_ok = SOFT flag (ไม่ถือว่า block)
         if not context_allowed:
             blocked.append("context_gate_block")
         if not trade_plan.get("valid"):
             blocked.append("rr_or_plan_invalid")
 
         status = "READY" if (trade_plan.get("valid") and trade_plan.get("allowed_to_trade")) else "BLOCKED"
-
+        
         results.append(
             {
                 "type": scenario.get("type"),

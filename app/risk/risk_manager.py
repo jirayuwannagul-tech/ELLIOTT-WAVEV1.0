@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 # SL ต้องห่างจาก entry อย่างน้อยกี่ % ถึงจะ valid
 # ถ้าน้อยกว่านี้ = SL ใกล้เกินไป โดนง่ายมาก → reject
-MIN_SL_PCT = 2.0
+MIN_SL_PCT = 1.0
 MAX_SL_PCT = 8.0
 
 def calculate_rr(entry: float, sl: float, tp: float) -> float:
@@ -57,7 +57,7 @@ def _check_sl_distance(entry: float, sl: float, direction: str) -> Optional[str]
     if entry <= 0:
         return "entry <= 0"
     sl_pct = abs(entry - sl) / entry * 100
-    if sl_pct < MIN_SL_PCT:
+    if sl_pct + 1e-9 < MIN_SL_PCT:
         return f"SL ใกล้เกินไป ({sl_pct:.2f}% < {MIN_SL_PCT}%)"
     if sl_pct > MAX_SL_PCT:
         return f"SL ไกลเกินไป ({sl_pct:.2f}% > {MAX_SL_PCT}%)"
@@ -272,6 +272,7 @@ def build_trade_plan(
         else:
             trade["reason"] = f"RR(TP2) ต่ำ ({round(rr, 2)})"
         return trade
+    
     # =========================
     # IMPULSE
     # =========================
@@ -280,47 +281,66 @@ def build_trade_plan(
         trade["reason"] = "IMPULSE: pivots ไม่พอ"
         return trade
 
-    breakout = float(pivots[-1]["price"])
-    sl = float(pivots[-2]["price"])
-    entry = breakout
-    p0 = float(pivots[0]["price"])
-    p1 = float(pivots[1]["price"])
-    base_len = abs(p1 - p0)
+    # ── entry ใช้ราคาปัจจุบัน ไม่ใช่ pivot เก่า ──
+    entry = float(current_price)
 
-    # SL distance check
+    # ── SL อยู่ที่ swing low/high ล่าสุด ──
+    swing_high = scenario.get("swing_high")
+    swing_low  = scenario.get("swing_low")
+
+    if direction == "LONG":
+        sl = float(swing_low) if swing_low else float(pivots[-2]["price"])
+        # ถ้า entry ต่ำกว่า sl = invalid
+        if entry <= sl:
+            trade["reason"] = "IMPULSE LONG: entry <= sl"
+            return trade
+
+    elif direction == "SHORT":
+        sl = float(swing_high) if swing_high else float(pivots[-2]["price"])
+
+        # FIX: ถ้า sl <= entry (SL อยู่ใต้ราคา) ให้บังคับ SL ให้อยู่เหนือ entry ขั้นต่ำตาม MIN_SL_PCT
+        if sl <= entry:
+            sl = entry * (1 + (MIN_SL_PCT / 100.0))
+
+    else:
+        trade["reason"] = "IMPULSE: direction ไม่ถูกต้อง"
+        return trade
+
+    # ── SL distance check ──
     sl_err = _check_sl_distance(entry, sl, direction)
     if sl_err:
         trade["reason"] = f"IMPULSE: {sl_err}"
         return trade
 
-    fib = _safe_fib_extension(p0, p1, entry, direction, base_len)
-    if fib is None:
-        trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
-        return trade
-    tp1, tp2, tp3 = fib["1.0"], fib["1.618"], fib["2.0"]
-
-    # sr adjustment
+    # ── คำนวณ TP จาก fib extension ──
+    risk = abs(entry - sl)
     if direction == "LONG":
-        if sr:
-            support = (sr.get("support") or {}).get("level")
-            if support and float(support) > sl:
-                sl = float(support)
-    elif direction == "SHORT":
-        if sr:
-            resist = (sr.get("resist") or {}).get("level")
-            if resist and float(resist) < sl:
-                sl = float(resist)
+        tp1 = entry + risk * 1.0
+        tp2 = entry + risk * 1.618
+        tp3 = entry + risk * 2.0
     else:
-        trade["reason"] = "IMPULSE: direction ไม่ถูกต้อง"
-        return trade
+        tp1 = entry - risk * 1.0
+        tp2 = entry - risk * 1.618
+        tp3 = entry - risk * 2.0
 
-    # re-check SL distance AFTER sr adjustment
+    trade.update({"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3})    
+
+    # ── SR adjustment ──
+    if direction == "LONG" and sr:
+        support = (sr.get("support") or {}).get("level")
+        if support and float(support) > sl:
+            sl = float(support)
+    elif direction == "SHORT" and sr:
+        resist = (sr.get("resist") or {}).get("level")
+        if resist and float(resist) < sl:
+            sl = float(resist)
+
+    # re-check หลัง SR
     sl_err = _check_sl_distance(entry, sl, direction)
     if sl_err:
         trade["reason"] = f"IMPULSE(after SR): {sl_err}"
         return trade
 
-    # ✅ APPLY CAP หลัง sr adjustment เสร็จ (สำคัญ)
     tp3 = _cap_tp3_by_max_r(entry, sl, tp3, direction)
 
     rr = calculate_rr(entry, sl, tp2)
@@ -329,13 +349,12 @@ def build_trade_plan(
             "entry": entry, "sl": sl,
             "tp1": tp1, "tp2": tp2, "tp3": tp3,
             "valid": True,
-            "reason": f"RR(TP2)={round(rr, 2)} ≥ {min_rr} (fib+sr)",
+            "reason": f"RR(TP2)={round(rr, 2)} ≥ {min_rr}",
         })
     else:
         trade["reason"] = f"RR(TP2) ต่ำ ({round(rr, 2)})"
 
     return trade
-
 
 def recalculate_from_fill(
     direction: str,

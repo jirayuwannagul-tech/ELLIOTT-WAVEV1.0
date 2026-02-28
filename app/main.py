@@ -30,6 +30,7 @@ from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_wat
 from app.config.wave_settings import TIMEFRAME
 from app.trading.binance_trader import get_balance, get_open_positions
 from app.trading.trade_executor import execute_signal
+from app.state.position_manager import save_armed_signal
 # from app.state.position_manager import get_active, _load_position, _key
 
 app = Flask(__name__)
@@ -263,8 +264,29 @@ def execute():
         return "FORBIDDEN", 403
 
     payload = request.get_json(silent=True) or {}
+
+    # NEW: ถ้ามี trigger_price → เก็บเป็น ARMED ให้ watcher ไปยิงจริงตอนแตะ trigger
+    trigger_price = payload.get("trigger_price")
+    if trigger_price is not None:
+        symbol = (payload.get("symbol") or "").upper()
+        direction = (payload.get("direction") or "").upper()
+        timeframe = (payload.get("timeframe") or os.getenv("TIMEFRAME") or "1D").upper()
+        trade_plan = payload.get("trade_plan") or {}
+        meta = payload.get("meta") or {}
+
+        save_armed_signal(
+            symbol=symbol,
+            timeframe=timeframe,
+            direction=direction,
+            trigger_price=float(trigger_price),
+            trade_plan=trade_plan,
+            meta=meta,
+        )
+        return {"ok": True, "armed": True}, 200
+
+    # fallback: legacy behavior
     execute_signal(payload)
-    return {"ok": True}, 200
+    return {"ok": True, "armed": False}, 200
 
 # ------------------ POSITION STATUS ------------------
 

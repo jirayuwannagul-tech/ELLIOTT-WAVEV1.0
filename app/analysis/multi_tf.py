@@ -48,11 +48,6 @@ def _last_close(df: pd.DataFrame) -> Optional[float]:
 
 
 def _h4_structure_confirm(df4h: pd.DataFrame) -> Tuple[bool, bool, str]:
-    """
-    Confirm แบบง่าย (ไม่ยาว):
-    - LONG confirm: close > last pivot-high price
-    - SHORT confirm: close < last pivot-low price
-    """
     if df4h is None or len(df4h) < 250:
         logger.warning(f"4H data ไม่พอ (len={len(df4h) if df4h is not None else 0}) → h4_confirm=False")
         return False, False, "4H len<250"
@@ -62,26 +57,29 @@ def _h4_structure_confirm(df4h: pd.DataFrame) -> Tuple[bool, bool, str]:
         return False, False, "4H no close"
 
     pivots = find_fractal_pivots(df4h, left=2, right=2)
-    pivots = filter_pivots(pivots, min_pct_move=0.8)  # 4H ลด threshold เพื่อไม่ให้โล่ง
+    pivots = filter_pivots(pivots, min_pct_move=0.8)
 
-    lastH = None
-    lastL = None
+    lastH: Optional[float] = None
+    lastL: Optional[float] = None
+
     for p in reversed(pivots):
+        price = p.get("price")
+        if price is None:
+            continue
         if lastH is None and p.get("type") == "H":
-            lastH = float(p.get("price"))
+            lastH = float(price)
         if lastL is None and p.get("type") == "L":
-            lastL = float(p.get("price"))
+            lastL = float(price)
         if lastH is not None and lastL is not None:
             break
 
     if lastH is None or lastL is None:
-        logger.warning(f"4H pivots ไม่พอ → h4_confirm=False")
+        logger.warning("4H pivots ไม่พอ → h4_confirm=False")
         return False, False, "4H pivots not enough"
 
-    confirm_long = close > lastH
+    confirm_long  = close > lastH
     confirm_short = close < lastL
     return confirm_long, confirm_short, f"4H close={close:.2f} lastH={lastH:.2f} lastL={lastL:.2f}"
-
 
 def get_mtf_summary(
     symbol: str,
