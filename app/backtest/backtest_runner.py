@@ -33,7 +33,6 @@ _EMPTY_BUCKETS = {
 
 INVALID_REASONS = Counter()
 
-
 def _prepare_df(symbol: str, interval: str, limit: int) -> Optional[pd.DataFrame]:
     try:
         import sqlite3
@@ -78,7 +77,6 @@ def _prepare_df(symbol: str, interval: str, limit: int) -> Optional[pd.DataFrame
     df = add_volume_ma(df, length=20)
     return df
 
-
 def _simulate_one_trade(
     df: pd.DataFrame,
     start_i: int,
@@ -116,7 +114,6 @@ def _simulate_one_trade(
 
     return {"result": "OPEN", "exit": None, "bars": len(df) - start_i}
 
-
 def _get_scenarios(sub: pd.DataFrame, macro_trend: str, rsi14: float, is_vol_spike: bool) -> List[Dict]:
     pivots = find_fractal_pivots(sub)
     pivots = filter_pivots(pivots, min_pct_move=1.5)
@@ -143,7 +140,6 @@ def _get_scenarios(sub: pd.DataFrame, macro_trend: str, rsi14: float, is_vol_spi
 
     return gated
 
-
 def _r_multiple(direction: str, entry: float, sl: float, tp3: float, result: str) -> float:
     risk = abs(entry - sl)
     if risk <= 0:
@@ -157,7 +153,6 @@ def _r_multiple(direction: str, entry: float, sl: float, tp3: float, result: str
         return 0.0
     return 0.0
 
-
 def _bucket_stats(trades: List[Dict], min_conf: float) -> Dict:
     bucket = [t for t in trades if float(t.get("confidence") or 0) >= min_conf]
     w = sum(1 for t in bucket if t["result"] == "WIN")
@@ -167,7 +162,6 @@ def _bucket_stats(trades: List[Dict], min_conf: float) -> Dict:
     wr = round((w / closed) * 100, 2) if closed > 0 else 0.0
     return {"trades": len(bucket), "wins": w, "losses": l, "open": o, "winrate": wr}
 
-
 def _safe_entry_time(t: Dict):
     v = t.get("entry_time")
     if v is None or (isinstance(v, float) and pd.isna(v)):
@@ -175,7 +169,6 @@ def _safe_entry_time(t: Dict):
     if isinstance(v, pd.Timestamp) and pd.isna(v):
         return pd.Timestamp.min.tz_localize("UTC")
     return v
-
 
 def _mirror_live_filters(sub: pd.DataFrame, symbol: str, direction: str) -> bool:
     """
@@ -205,7 +198,6 @@ def _mirror_live_filters(sub: pd.DataFrame, symbol: str, direction: str) -> bool
         return False
 
     return True
-
 
 # ---------------------------------------------------------------------------
 # backtest_symbol
