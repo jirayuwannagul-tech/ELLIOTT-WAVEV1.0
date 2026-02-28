@@ -44,6 +44,7 @@ def _armed_triggered(direction: str, mark: float, trigger: float) -> bool:
     return False
 
 def _loop():
+    print(f"[WATCHER] start loop timeframe={TIMEFRAME} interval={WATCH_SEC}", flush=True)
     while True:
         try:
             # =========================
@@ -185,12 +186,12 @@ def _loop():
             import traceback
             print("WATCHER_ERROR:", e, flush=True)
             print(traceback.format_exc(), flush=True)
-
         time.sleep(WATCH_SEC)
 
 def start_position_watcher():
     global _T
     if _T and _T.is_alive():
         return
+    print("[WATCHER] thread starting...", flush=True)
     _T = threading.Thread(target=_loop, daemon=True)
     _T.start()
