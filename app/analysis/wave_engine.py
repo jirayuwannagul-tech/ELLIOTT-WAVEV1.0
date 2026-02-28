@@ -183,30 +183,10 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     df = add_atr(df, length=14)
     df = add_volume_ma(df, length=20)
 
-    # --- ATR Gate (align with backtest): ต้องเป็น compression ก่อน ---
-    atr = float(df["atr14"].iloc[-1])
-    atr_ma50 = float(df["atr14"].rolling(50).mean().iloc[-1]) if len(df) >= 50 else 0.0
-
-    if atr_ma50 > 0 and atr >= atr_ma50:
-        if (os.getenv("BYPASS_ATR_GATE", "") or "").lower() in ("1","true","yes"):
-            pass  # debug only: allow scenarios generation
-        else:
-            return {
-                "symbol": symbol,
-                "price": float(df["close"].iloc[-1]),
-                "scenarios": [],
-                "message": "ATR_GATE: ตลาดยังไม่ compress",
-                "mode": detect_market_mode(df),
-                "macro_trend": trend_filter_ema(df),
-                "rsi14": float(df["rsi14"].iloc[-1]),
-                "volume_spike": False,
-                "mtf": {},
-                "wave_label": {"label": None, "matches": []},
-                "sideway": None,
-                "zones": [],
-                "sr": {},
-                "position_size_mult": 1.0,
-            }
+    # ── ATR Gate ถูกลบออก ──────────────────────────────────────────────────
+    # เหตุผล: Elliott Wave เข้าที่ fib zone ของ wave 2/4
+    # ไม่ต้องรอตลาด compress เหมือนระบบ breakout
+    # ─────────────────────────────────────────────────────────────────────
 
     last_close = float(df["close"].iloc[-1])
     current_price = last_close
@@ -217,7 +197,6 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     rsi14 = float(df["rsi14"].iloc[-1])
     is_vol_spike = bool(volume_spike(df, length=20, multiplier=1.5))
 
-    # Trend Structure Confirm (สำหรับโหมด TREND)
     ema50 = float(df["ema50"].iloc[-1])
     ema200 = float(df["ema200"].iloc[-1])
     ema200_prev = float(df["ema200"].iloc[-2]) if len(df) >= 2 else ema200
@@ -228,10 +207,10 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
     size_mult = 1.0 if mode == "TREND" else 0.5
 
     mtf = get_mtf_summary(symbol) or {}
-    weekly_permit_long = bool(mtf.get("weekly_permit_long", True))
+    weekly_permit_long  = bool(mtf.get("weekly_permit_long", True))
     weekly_permit_short = bool(mtf.get("weekly_permit_short", True))
-    h4_confirm_long = bool(mtf.get("h4_confirm_long", False))
-    h4_confirm_short = bool(mtf.get("h4_confirm_short", False))
+    h4_confirm_long     = bool(mtf.get("h4_confirm_long", False))
+    h4_confirm_short    = bool(mtf.get("h4_confirm_short", False))
 
     base = {
         "symbol": symbol,
@@ -269,8 +248,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             "sr": sr if sr else {},
         })
         return out
- 
-    # --- สร้าง scenarios จาก pivots ---
+
     scenarios = (
         build_scenarios(
             pivots,
@@ -281,18 +259,15 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         or []
     )
 
-    # ✅ FIX: ensure pivots are attached to every scenario
     for sc in scenarios:
         if "pivots" not in sc or not sc.get("pivots"):
             sc["pivots"] = pivots
 
-    # --- Context gate ---
     regime = detect_market_regime(df)
     macro_bias = compute_macro_bias(regime, rsi14=rsi14)
 
     normalized: List[Dict] = []
     for sc in scenarios:
-        # ✅ HARD BLOCK: fallback scenarios must never be tradable
         if sc.get("is_fallback"):
             sc2 = dict(sc)
             sc2["context_allowed"] = False
@@ -318,7 +293,6 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             normalized.append(sc2)
 
     scenarios = normalized
-
     results: List[Dict] = []
 
     for scenario in scenarios:
@@ -326,14 +300,12 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         if not direction:
             continue
 
-        # --- Weekly permit (HARD filter) ---
         weekly_ok = True
         if direction == "LONG" and not weekly_permit_long:
             weekly_ok = False
         if direction == "SHORT" and not weekly_permit_short:
             weekly_ok = False
 
-        # --- 4H confirm (SOFT flag เท่านั้น) ---
         mtf_ok = True
         if direction == "LONG" and not h4_confirm_long:
             mtf_ok = False
@@ -349,26 +321,21 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             sr=sr,
         )
 
-        # --- Trend Structure Confirm ---
-        # เป้าหมาย: เพิ่ม winrate (ลดเทรดสวน slope EMA200)
         trend_ok = True
         if mode == "TREND":
             if direction == "LONG" and not trend_ok_long:
                 trend_ok = False
             if direction == "SHORT" and not trend_ok_short:
                 trend_ok = False
-
-            # ✅ HARD filter (เฉพาะโหมด TREND)
             if not trend_ok:
                 continue
 
-        # LIVE: Hard filter = weekly_ok + trade_plan.valid
         allowed_to_trade = bool(
             weekly_ok
+            and context_allowed
             and trade_plan.get("valid") is True
         )
 
-        # --- Trigger logic ---
         if not allowed_to_trade:
             trade_plan["triggered"] = False
         else:
@@ -377,13 +344,11 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
                 entry = float(entry)
                 stype = (scenario.get("type") or "").upper()
 
-                # ABC: require small confirmation beyond entry (reduce chop losses)
                 if stype == "ABC_UP":
                     trade_plan["triggered"] = last_close > (entry * (1 + float(ABC_CONFIRM_BUFFER)))
                 elif stype == "ABC_DOWN":
                     trade_plan["triggered"] = last_close < (entry * (1 - float(ABC_CONFIRM_BUFFER)))
                 else:
-                    # FIX: entry = current_price → allow equality to trigger
                     if direction == "LONG" and last_close < entry:
                         trade_plan["triggered"] = False
                     elif direction == "SHORT" and last_close > entry:
@@ -392,7 +357,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
                         trade_plan["triggered"] = True
             else:
                 trade_plan["triggered"] = False
-    
+
         trade_plan["allowed_to_trade"] = allowed_to_trade
         trade_plan["weekly_ok"] = weekly_ok
         trade_plan["mtf_ok"] = mtf_ok
@@ -407,38 +372,33 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             f"valid={trade_plan.get('valid')} triggered={trade_plan.get('triggered')}"
         )
 
-       # === STATUS / BLOCK REASON ===
         blocked = []
         if not weekly_ok:
             blocked.append("weekly_permit_block")
-        # mtf_ok = SOFT flag (ไม่ถือว่า block)
         if not context_allowed:
             blocked.append("context_gate_block")
         if not trade_plan.get("valid"):
             blocked.append("rr_or_plan_invalid")
 
-        status = "READY" if (trade_plan.get("valid") and trade_plan.get("allowed_to_trade")) else "BLOCKED"
-        
-        results.append(
-            {
-                "type": scenario.get("type"),
-                "phase": scenario.get("phase"),
-                "direction": direction,
-                "probability": scenario.get("probability"),
-                "confidence": scenario.get("confidence"),
-                "context_score": scenario.get("context_score"),
-                "weekly_ok": weekly_ok,
-                "mtf_ok": mtf_ok,
-                "context_allowed": context_allowed,
-                "context_reason": scenario.get("context_reason"),
-                "status": status,
-                "blocked_reasons": blocked,
-                "trade_plan": trade_plan,
-                "reasons": scenario.get("reasons", []),
-            }
-        )
+        status = "READY" if trade_plan.get("allowed_to_trade") else "BLOCKED"
 
-        # Execute: เฉพาะ triggered จริงเท่านั้น
+        results.append({
+            "type": scenario.get("type"),
+            "phase": scenario.get("phase"),
+            "direction": direction,
+            "probability": scenario.get("probability"),
+            "confidence": scenario.get("confidence"),
+            "context_score": scenario.get("context_score"),
+            "weekly_ok": weekly_ok,
+            "mtf_ok": mtf_ok,
+            "context_allowed": context_allowed,
+            "context_reason": scenario.get("context_reason"),
+            "status": status,
+            "blocked_reasons": blocked,
+            "trade_plan": trade_plan,
+            "reasons": scenario.get("reasons", []),
+        })
+
         if trade_plan.get("triggered"):
             try:
                 vps_url = (os.getenv("VPS_URL", "") or "").strip()
@@ -463,14 +423,12 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
         msg = f"ไม่มี scenario ที่สร้างได้ (1D={macro_trend}, rsi14={rsi14:.1f})"
 
     out = dict(base)
-    out.update(
-        {
-            "scenarios": results,
-            "message": msg,
-            "wave_label": wave_label,
-            "sideway": None,
-            "zones": zones if zones else [],
-            "sr": sr if sr else {},
-        }
-    )
+    out.update({
+        "scenarios": results,
+        "message": msg,
+        "wave_label": wave_label,
+        "sideway": None,
+        "zones": zones if zones else [],
+        "sr": sr if sr else {},
+    })
     return out

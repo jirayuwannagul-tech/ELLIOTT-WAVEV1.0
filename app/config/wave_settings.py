@@ -7,7 +7,7 @@ TIMEZONE = ZoneInfo("Asia/Bangkok")
 RUN_HOUR = 7
 RUN_MINUTE = 5
 
-SYMBOLS = ['BTCUSDT']
+SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']
 
 MAX_RETRY = 3
 # --- Position sizing (fixed notional per trade) ---

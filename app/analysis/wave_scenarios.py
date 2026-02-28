@@ -498,7 +498,7 @@ def build_scenarios(
         return []
 
     # ── Step 3: Wave position จาก 1D ──
-    wave_pos = _determine_wave_position(pivots, structure, primary_context=primary)
+    wave_pos   = _determine_wave_position(pivots, structure, primary_context=primary)
     position   = wave_pos.get("position", "UNKNOWN")
     entry_type = wave_pos.get("entry_type")
     direction  = wave_pos.get("direction")
@@ -511,17 +511,10 @@ def build_scenarios(
     # ── Step 4: Filter ด้วย Primary Wave bias ──
     warnings = []
 
-    # ถ้า primary BEARISH → ไม่ Long
     if primary_bias == "BEARISH" and direction == "LONG":
         warnings.append(f"สวน Primary Wave {primary_wave} ({primary_degree}) — BEARISH")
-    # ถ้า primary BULLISH → ไม่ SHORT
     elif primary_bias == "BULLISH" and direction == "SHORT":
         warnings.append(f"สวน Primary Wave {primary_wave} ({primary_degree}) — BULLISH")
-
-    # ถ้าสวน primary wave อย่างชัดเจน → ไม่เทรด
-    if len(warnings) > 0 and primary_bias != "NEUTRAL":
-        # ยังเทรดได้ถ้า 1D trend แรงมากพอ แต่ลด score
-        pass
 
     mt = (macro_trend or "NEUTRAL").upper()
     if mt == "BULL" and direction == "SHORT":
@@ -547,11 +540,11 @@ def build_scenarios(
 
     # Primary wave alignment bonus/penalty
     if primary_bias == "BEARISH" and direction == "SHORT":
-        score = min(score + 8, 100)   # สอดคล้อง primary → bonus
+        score = min(score + 8, 100)
     elif primary_bias == "BULLISH" and direction == "LONG":
         score = min(score + 8, 100)
     elif primary_bias != "NEUTRAL":
-        score = max(score - 10, 1)    # สวน primary → penalty
+        score = max(score - 10, 1)
 
     reasons = [
         f"Primary Wave: {primary_wave} ({primary_degree}) — {primary_bias}",
@@ -568,22 +561,44 @@ def build_scenarios(
     if warnings:
         reasons.extend(warnings)
 
+    # ── Step 6: คำนวณ swing_high / swing_low ให้ถูกทิศ ──
+    if direction == "SHORT":
+        swing_high = (
+            wave_pos.get("wave_4_high")
+            or wave_pos.get("wave_2_high")
+            or wave_pos.get("wave_1_start")
+        )
+        swing_low = (
+            wave_pos.get("wave_3_end")
+            or wave_pos.get("wave_1_end")
+        )
+    else:  # LONG
+        swing_high = (
+            wave_pos.get("wave_1_end")
+            or wave_pos.get("wave_3_end")
+        )
+        swing_low = (
+            wave_pos.get("wave_4_low")
+            or wave_pos.get("wave_2_low")
+            or wave_pos.get("wave_1_start")
+        )
+
     scenario = {
-        "type":           sc_type,
-        "phase":          phase,
-        "direction":      direction,
-        "score":          score,
-        "reasons":        reasons,
-        "pivots":         pivots,
-        "major_trend":    major_trend,
-        "wave_position":  position,
-        "fib_ratio":      fib_ratio,
-        "swing_high":     wave_pos.get("wave_1_start") or wave_pos.get("wave_3_end"),
-        "swing_low":      wave_pos.get("wave_1_end")   or wave_pos.get("wave_4_low"),
-        "primary_wave":   primary_wave,
-        "primary_bias":   primary_bias,
-        "primary_note":   primary_note,
-        "is_fallback":    False,
+        "type":          sc_type,
+        "phase":         phase,
+        "direction":     direction,
+        "score":         score,
+        "reasons":       reasons,
+        "pivots":        pivots,
+        "major_trend":   major_trend,
+        "wave_position": position,
+        "fib_ratio":     fib_ratio,
+        "swing_high":    swing_high,
+        "swing_low":     swing_low,
+        "primary_wave":  primary_wave,
+        "primary_bias":  primary_bias,
+        "primary_note":  primary_note,
+        "is_fallback":   False,
     }
 
     if score >= 50:
