@@ -470,6 +470,7 @@ def build_scenarios(
     macro_trend: str = "NEUTRAL",
     rsi14: float = 50.0,
     volume_spike: bool = False,
+    symbol: str = "BTCUSDT",
 ) -> List[Dict]:
     scenarios: List[Dict] = []
 
@@ -480,7 +481,7 @@ def build_scenarios(
     primary: Dict = {}
     try:
         from app.analysis.btc_cycle import get_primary_bias
-        primary = get_primary_bias()
+        primary = get_primary_bias(symbol)
     except Exception:
         pass
 

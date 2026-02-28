@@ -277,14 +277,6 @@ def run_symbol_bt(
         if in_trade or i < skip_until:
             continue
 
-        # ✅ ATR Gate — mirror live wave_engine.py
-        if "atr14" in df.columns and i >= 49:
-            atr_val = float(df["atr14"].iloc[i])
-            atr_ma50_val = float(df["atr14"].iloc[max(0, i - 49) : i + 1].mean())
-            if atr_ma50_val > 0 and atr_val >= atr_ma50_val:
-                dbg["atr_gate_skip"] = dbg.get("atr_gate_skip", 0) + 1
-                continue
-
         start = max(0, (i + 1) - window_len)
         sub = df.iloc[start : i + 1].copy()
 

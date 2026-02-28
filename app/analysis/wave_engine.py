@@ -255,6 +255,7 @@ def analyze_symbol(symbol: str) -> Optional[Dict]:
             macro_trend=macro_trend,
             rsi14=rsi14,
             volume_spike=is_vol_spike,
+            symbol=symbol,
         )
         or []
     )

@@ -251,9 +251,6 @@ def backtest_symbol(
         last_close = float(sub["close"].iloc[-1])
 
         atr = float(sub["atr14"].iloc[-1])
-        atr_ma50 = float(sub["atr14"].rolling(50).mean().iloc[-1]) if len(sub) >= 50 else 0.0
-        if atr_ma50 > 0 and atr >= atr_ma50:
-            continue
 
         scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
         if not scenarios:
@@ -389,10 +386,7 @@ def backtest_symbol_trades(
         last_close = float(sub["close"].iloc[-1])
 
         atr = float(sub["atr14"].iloc[-1])
-        atr_ma50 = float(sub["atr14"].rolling(50).mean().iloc[-1]) if len(sub) >= 50 else 0.0
-        if atr_ma50 > 0 and atr >= atr_ma50:
-            continue
-
+       
         scenarios = _get_scenarios(sub, macro_trend, rsi14, is_vol_spike)
         if not scenarios:
             continue
