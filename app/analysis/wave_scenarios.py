@@ -5,30 +5,32 @@ from app.analysis.wave_rules import validate_impulse, validate_abc
 def score_scenario(base_score, warnings, macro_trend, rsi14, volume_spike, direction):
     score = float(base_score)
 
-    # warning penalty
     score -= len(warnings) * 4
 
-    # Trend bonus/penalty
     mt = (macro_trend or "NEUTRAL").upper()
     if mt == "NEUTRAL":
         score -= 2
     if mt in ("BULL", "BEAR"):
         score += 4
 
-    # RSI bonus
     direction = (direction or "").upper()
-    if direction == "LONG":
-        if rsi14 >= 60:
-            score += 4
-        elif rsi14 >= 55:
-            score += 2
-    elif direction == "SHORT":
-        if rsi14 <= 40:
-            score += 4
-        elif rsi14 <= 45:
-            score += 2
 
-    # Volume spike bonus
+    # ✅ แก้: bonus เมื่อ RSI อยู่ใน setup zone ไม่ใช่ extended zone
+    if direction == "LONG":
+        if 45 <= rsi14 <= 60:   # midrange momentum ดี
+            score += 4
+        elif 40 <= rsi14 < 45:  # กำลัง recover
+            score += 2
+        elif rsi14 > 70:        # overbought — penalty
+            score -= 4
+    elif direction == "SHORT":
+        if 40 <= rsi14 <= 55:   # midrange momentum ดี
+            score += 4
+        elif 55 < rsi14 <= 60:  # กำลัง weaken
+            score += 2
+        elif rsi14 < 30:        # oversold — penalty
+            score -= 4
+
     if volume_spike:
         score += 5
 

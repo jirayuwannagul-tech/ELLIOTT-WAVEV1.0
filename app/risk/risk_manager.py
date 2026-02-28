@@ -201,7 +201,7 @@ def build_trade_plan(
                 trade["reason"] = f"ABC_DOWN: {sl_err}"
                 return trade
 
-            fib = _safe_fib_extension(h0, l1, entry, "SHORT", a_len)
+            fib = _safe_fib_extension(h0, l1, h2, "SHORT", a_len)
             if fib is None:
                 trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
                 return trade
@@ -238,7 +238,7 @@ def build_trade_plan(
                 trade["reason"] = f"ABC_UP: {sl_err}"
                 return trade
 
-            fib = _safe_fib_extension(l0, h1, entry, "LONG", a_len)
+            fib = _safe_fib_extension(l0, h1, l2, "LONG", a_len)
             if fib is None:
                 trade["reason"] = "fib_invalid: targets<=0 (base_len>anchor)"
                 return trade

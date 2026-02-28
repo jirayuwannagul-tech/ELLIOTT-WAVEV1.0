@@ -101,15 +101,6 @@ def validate_impulse(points: List[Dict], direction: str) -> Tuple[bool, List[str
 
 
 def validate_abc(points: List[Dict], direction: str) -> Tuple[bool, List[str]]:
-    """
-    Basic ABC correction validation using 4 pivots (0..3):
-    For bearish correction after uptrend (down A, up B, down C) etc.
-    เราเช็คแค่ pattern + ความต่อเนื่องก่อน (ไม่ลงลึกชนิด zigzag/flat/triangle ในไฟล์นี้)
-
-    direction:
-      - "DOWN" = A ลง, B ขึ้น, C ลง (L/H/L pattern end)
-      - "UP"   = A ขึ้น, B ลง, C ขึ้น
-    """
     reasons: List[str] = []
     direction = (direction or "").upper().strip()
 
@@ -122,52 +113,46 @@ def validate_abc(points: List[Dict], direction: str) -> Tuple[bool, List[str]]:
     p0, p1, p2, p3 = points
 
     if direction == "DOWN":
-        # H0-L1-H2-L3
         expected = ["H", "L", "H", "L"]
         if [p["type"] for p in points] != expected:
             return False, [f"ABC DOWN ต้องเป็น pattern {''.join(expected)}"]
-        # C should make a lower low than A (often), allow equal with tolerance later
+
+        # ✅ HARD block: C ต้องทำ low ต่ำกว่า A
         if _price(points, 3) >= _price(points, 1):
-            reasons.append("โครงสร้างไม่ชัด: C ไม่ทำ low ต่ำกว่า A (confidence ต่ำ)")
+            return False, ["C ไม่ทำ low ต่ำกว่า A (invalid)"]
+
     elif direction == "UP":
-        # L0-H1-L2-H3
         expected = ["L", "H", "L", "H"]
         if [p["type"] for p in points] != expected:
             return False, [f"ABC UP ต้องเป็น pattern {''.join(expected)}"]
+
+        # ✅ HARD block: C ต้องทำ high สูงกว่า A
         if _price(points, 3) <= _price(points, 1):
-            reasons.append("โครงสร้างไม่ชัด: C ไม่ทำ high สูงกว่า A (confidence ต่ำ)")
+            return False, ["C ไม่ทำ high สูงกว่า A (invalid)"]
+
     else:
         return False, ["direction ต้องเป็น UP หรือ DOWN"]
 
-    # ABC ผ่านได้แม้ confidence ต่ำ (ให้ scoring ไปจัดใน wave_scenarios)
-
-    # ---- ABC Fibonacci classification (basic) ----
-    # ใช้ความยาว A และตำแหน่ง B เทียบ fib retrace
     a_len = abs(_price(points, 1) - _price(points, 0))
     if a_len == 0:
         reasons.append("Wave A length = 0 (คำนวณ Fib ไม่ได้)")
         return True, reasons
 
-    # B retrace ratio จากจบ A กลับไปทาง A
-    # DOWN: A = H0->L1, B = L1->H2
-    # UP  : A = L0->H1, B = H1->L2
     b_retrace = abs((_price(points, 2) - _price(points, 1)) / a_len)
 
-    # Classify แบบพื้นฐาน
-    # Zigzag: B มัก retrace ~0.382–0.618
-    # Flat:   B มัก retrace >= 0.8 (ใกล้ 0.9–1.0)
     if 0.382 <= b_retrace <= 0.618:
         reasons.append("ABC: คล้าย Zigzag (B retrace 0.382–0.618)")
     elif b_retrace >= 0.8:
         reasons.append("ABC: คล้าย Flat (B retrace >= 0.8)")
     else:
-        reasons.append("ABC: B retrace ไม่ชัด (Zigzag/Flat ไม่ชัด)")
+        # ✅ HARD block: B retrace ไม่อยู่ใน zone ที่รู้จัก
+        return False, ["ABC: B retrace ไม่ชัด — ไม่ใช่ Zigzag หรือ Flat"]
 
-    # C extension (เทียบกับ A)
     c_len = abs(_price(points, 3) - _price(points, 2))
     c_ext = c_len / a_len
     if c_ext < 1.0:
         reasons.append("ABC: Wave C สั้นกว่า A (อ่อน)")
     elif c_ext >= 1.618:
         reasons.append("ABC: Wave C ยืดแรง (>=1.618)")
+
     return True, reasons

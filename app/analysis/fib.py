@@ -33,10 +33,6 @@ def fib_extension(a: float, b: float, c: float):
 
 
 def fib_zone_match(value: float):
-    """
-    Check which common fib zone the value fits
-    """
-
     zones = {
         "0.236": 0.236,
         "0.382": 0.382,
@@ -47,7 +43,7 @@ def fib_zone_match(value: float):
         "1.618": 1.618,
     }
 
-    tolerance = 0.03  # 3%
+    tolerance = 0.03
 
     matches = []
 
@@ -55,4 +51,4 @@ def fib_zone_match(value: float):
         if abs(value - level) <= tolerance:
             matches.append(name)
 
-    return matches
+    return matches  
