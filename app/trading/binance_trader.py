@@ -80,7 +80,7 @@ def adjust_price(symbol: str, price: float) -> float:
 
 def _get_keys() -> tuple[str, str]:
     api_key = os.getenv("BINANCE_API_KEY", "")
-    secret = os.getenv("BINANCE_SECRET_KEY", "")
+    secret = os.getenv("BINANCE_API_SECRET", "")
     return api_key, secret
 
 
