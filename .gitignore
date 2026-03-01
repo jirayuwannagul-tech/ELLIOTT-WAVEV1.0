@@ -21,3 +21,4 @@ data/
 tmp_trades.csv
 # runtime db (DO NOT COMMIT)
 positions.db
+.env
