@@ -140,18 +140,63 @@ elliott-wave-system/
 │   │   ├── market_regime.py      ← ตรวจ TREND/RANGE/CHOP
 │   │   ├── multi_tf.py           ← weekly permit + 4H confirm
 │   │   ├── wave_scenarios.py     ← สร้าง ABC/IMPULSE scenarios
-│   │   └── pivot.py              ← หา pivot points
+│   │   ├── wave_rules.py         ← validate_impulse / validate_abc
+│   │   ├── wave_labeler.py       ← label wave degree
+│   │   ├── pivot.py              ← หา pivot points
+│   │   ├── fib.py                ← คำนวณ Fibonacci levels
+│   │   ├── btc_cycle.py          ← BTC cycle bias
+│   │   ├── trend_detector.py     ← ตรวจ trend direction
+│   │   └── zones.py              ← support/resistance zones
 │   ├── backtest/
-│   │   └── backtest_runner.py    ← ทดสอบย้อนหลัง
+│   │   ├── backtest_runner.py    ← ทดสอบย้อนหลัง
+│   │   └── live_mirror_bt.py     ← backtest ที่ mirror filter ชุดเดียวกับ live
+│   ├── config/
+│   │   └── wave_settings.py      ← SYMBOLS, MIN_CONFIDENCE, MIN_RR
+│   ├── data/
+│   │   ├── binance_fetcher.py    ← ดึง OHLCV จาก Binance
+│   │   └── export_ohlcv_csv.py   ← export ข้อมูลเป็น CSV
 │   ├── indicators/
-│   │   └── trend_filter.py       ← allow_direction(), trend_filter_ema()
+│   │   ├── trend_filter.py       ← allow_direction(), trend_filter_ema()
+│   │   ├── atr.py                ← คำนวณ ATR
+│   │   ├── ema.py                ← คำนวณ EMA
+│   │   ├── rsi.py                ← คำนวณ RSI
+│   │   └── volume.py             ← volume indicators
+│   ├── performance/
+│   │   ├── dashboard.py          ← /performance route
+│   │   └── metrics.py            ← คำนวณ R, DD, equity
 │   ├── risk/
 │   │   └── risk_manager.py       ← build_trade_plan(), คำนวณ RR
-│   └── config/
-│       └── wave_settings.py      ← SYMBOLS, MIN_CONFIDENCE, MIN_RR
+│   ├── scheduler/
+│   │   └── daily_wave_scheduler.py ← run_daily_wave_job, run_trend_watch_job
+│   ├── services/
+│   │   └── telegram_reporter.py  ← ส่ง signal ผ่าน Telegram
+│   ├── state/
+│   │   └── position_manager.py   ← positions.db (ACTIVE/CLOSED)
+│   ├── trading/
+│   │   ├── binance_trader.py     ← Binance Futures API wrapper
+│   │   ├── position_sizer.py     ← คำนวณ qty จาก notional
+│   │   ├── position_watcher.py   ← เฝ้า TP1/TP2/TP3/SL
+│   │   └── trade_executor.py     ← execute order จริง
+│   └── main.py                   ← Flask API + Dashboard + routes
+├── data/                         ← CSV + SQLite (OHLCV ทุก symbol)
+├── tests/
+│   ├── test_pivot.py
+│   ├── test_risk_plan.py
+│   ├── test_wave_engine_smoke.py
+│   └── test_wave_rules.py
+├── tools/
+│   ├── code_audit.py
+│   └── update_top30_futures_1d1000.py
+├── scripts/
+│   └── test_attach_sl_tp.py
 ├── filter_test.py                ← สคริปต์ทดสอบตัวกรอง (สร้าง Feb 2026)
+├── run_backtest_all.py           ← รัน backtest ทุก symbol
+├── wave_status.py                ← ดู wave status ปัจจุบัน
+├── debug_btc.py                  ← debug BTC signal
+├── conftest.py
+├── requirements.txt
+├── Procfile
 └── CONTEXT.md                    ← ไฟล์นี้
-```
 
 ---
 
@@ -166,6 +211,13 @@ elliott-wave-system/
 | `app/analysis/macro_bias.py` | threshold `>= 60` → `>= 50` | F_MACRO_BIAS block สวน trend ได้จริง |
 | `app/risk/risk_manager.py` | แก้ `_safe_fib_extension` ใช้ `direction + base_len` แทน signed math | fib_extension ถูกทิศทุกกรณี รวมถึง fallback pivot |
 
+### รอบที่ 2 (Mar 2026)
+| ไฟล์ | สิ่งที่แก้ | ผลที่คาดหวัง |
+|------|-----------|-------------|
+| `app/state/position_manager.py` | `DB_PATH` เปลี่ยนจาก hardcode `/root/...` เป็น `Path(__file__).resolve().parents[2]` + รับ override ผ่าน `ELLIOTT_DB` ENV | รันบน Mac / VPS / Railway ได้โดยไม่ต้องตั้ง ENV |
+| `app/analysis/pivot.py` | guard condition `len(df) < atr_length + right + left + 1` → `len(df) < left + right + 1` | `find_fractal_pivots` ไม่ return `[]` เมื่อข้อมูลน้อยกว่า 14 แถว |
+| `app/config/wave_settings.py` | เพิ่ม `SOLUSDT: 8.0` ใน `NOTIONAL_MAP`, ลบ `AAEUSDT` ออก | SOL order ไม่ error minQty |
+| `.env` | ลบ `ELLIOTT_DB=/root/ELLIOTT-WAVEV1.0/data/positions.db` ออก | ไม่ override DB_PATH ที่แก้ไปแล้ว |
 ---
 
 ## ปัญหาที่รอแก้ไข
