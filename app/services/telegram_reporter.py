@@ -47,20 +47,11 @@ def _fmt_price(x: float) -> str:
 
 def format_symbol_report(analysis: dict) -> str:
     symbol = analysis.get("symbol", "-")
-    price = analysis.get("price")
-    macro = analysis.get("macro_trend")
-    rsi14 = analysis.get("rsi14")
-    vol = analysis.get("volume_spike")
-    mtf = analysis.get("mtf") or {}
-    mode = analysis.get("mode")
-    size_mult = analysis.get("position_size_mult")
-
-    wl = (analysis.get("wave_label") or {}).get("label") or {}
-    pivots = wl.get("pivots") or []
+    size_mult = analysis.get("position_size_mult", 1.0)
 
     scenarios = analysis.get("scenarios", []) or []
     if not scenarios:
-        return f"{symbol} — ไม่มีสัญญาณที่ผ่านเงื่อนไข"
+        return f"👑 {symbol} (1D)\nไม่มีสัญญาณ"
 
     sc = scenarios[0]
     trade = sc.get("trade_plan", {}) or {}
@@ -75,105 +66,30 @@ def format_symbol_report(analysis: dict) -> str:
     support = (sr.get("support") or {}).get("level")
     resist = (sr.get("resist") or {}).get("level")
 
-    # Pivot list format
-    pivot_lines = []
-    for i, p in enumerate(pivots, start=1):
-        pivot_lines.append(f"{i}) {p.get('type')} { _fmt_price(p.get('price')) }")
-    pivot_text = "\n".join(pivot_lines) if pivot_lines else "-"
+    direction = sc.get("direction") or "-"
 
-    # ===== ✅ NEW: สถานะ/เหตุผลการบล็อก =====
-    status = (sc.get("status") or "").upper()  # READY / WAIT / BLOCKED (จาก wave_engine)
-    blocked = sc.get("blocked_reasons") or []
-
-    # fallback เผื่อยังไม่มี status
-    allowed = bool(trade.get("allowed_to_trade", True))
-    triggered = bool(trade.get("triggered", False))
-
-    if not status:
-        if triggered and allowed:
-            status = "READY"
-        elif not allowed:
-            status = "BLOCKED"
-        else:
-            status = "WAIT"
-
-    if status == "BLOCKED" and not blocked:
-        # fallback reasons จาก flag เดิม
-        if sc.get("mtf_ok") is False or trade.get("mtf_ok") is False:
-            blocked.append("h4_confirm_block")
-        if sc.get("context_allowed") is False or trade.get("context_allowed") is False:
-            blocked.append("context_gate_block")
-        if sc.get("weekly_ok") is False or trade.get("weekly_ok") is False:
-            blocked.append("weekly_permit_block")
-
-    reason_map = {
-        "h4_confirm_block": "❌ 4H ยังไม่ยืนยัน",
-        "context_gate_block": "❌ Context gate บล็อก",
-        "weekly_permit_block": "❌ Weekly permit บล็อก",
-    }
-    blocked_lines = []
-    for r in blocked:
-        blocked_lines.append(reason_map.get(str(r), f"❌ {r}"))
-    blocked_text = "\n".join(blocked_lines) if blocked_lines else "-"
-
-    if status == "READY":
-        status_line = "พร้อมเข้า (TRIGGERED)"
-    elif status == "WAIT":
-        status_line = "รอการยืนยัน (WAIT)"
-    else:
-        status_line = "ถูกบล็อก (BLOCKED)"
-
-    # ===== report text =====
     text = f"""
-════════════════════════════
-👑 VIP รายงานเชิงลึก — {symbol} (1D)
-อัปเดตเวลา 07:05 น.
-════════════════════════════
+═══════════════════
+👑 {symbol} (1D)
 
-📍 ราคาปัจจุบัน: {_fmt_price(price) if price else '-'}
-
-📊 ภาพรวมตลาด
-- แนวโน้มหลัก: {macro}
-- สภาพตลาด: {mode}
-- RSI14: {round(rsi14,1) if rsi14 else '-'}
-- ปริมาณซื้อขายสูงผิดปกติ: {bool(vol)}
-
-📚 มุมมองหลายไทม์เฟรม
-- รายสัปดาห์: {mtf.get('weekly_trend')}
-- 4 ชั่วโมงยืนยัน: {mtf.get('h4_confirm_long') or mtf.get('h4_confirm_short')}
-
-────────────────────
-🧠 โครงสร้าง Elliott Wave
-รูปแบบล่าสุด: {wl.get('pattern')}
-
-ลำดับจุดกลับตัว (Pivot)
-{pivot_text}
-
-────────────────────
 🎯 แผนการเทรด
-ทิศทาง: {sc.get('direction')}
+ทิศทาง: {direction}
+Entry: {_fmt_price(entry) if entry else '-'}
+SL: {_fmt_price(sl) if sl else '-'}
 
-เข้าเมื่อราคาปิดเหนือ: {_fmt_price(entry) if entry else '-'}
-จุดตัดขาดทุน (SL): {_fmt_price(sl) if sl else '-'}
-
-เป้าหมายกำไร:
 TP1: {_fmt_price(tp1) if tp1 else '-'}
 TP2: {_fmt_price(tp2) if tp2 else '-'}
 TP3: {_fmt_price(tp3) if tp3 else '-'}
 
-ขนาดไม้แนะนำ: {size_mult} เท่า
-
+ขนาดไม้: {size_mult}x
 ────────────────────
-📌 แนวรับ / แนวต้านใกล้เคียง
-แนวรับใกล้สุด: {_fmt_price(support) if support else '-'}
-แนวต้านใกล้สุด: {_fmt_price(resist) if resist else '-'}
+📌 แนวรับ/ต้านใกล้เคียง
+แนวรับ: {_fmt_price(support) if support else '-'}
+แนวต้าน: {_fmt_price(resist) if resist else '-'}
+═══════════════════
 
-────────────────────
-สถานะสัญญาณ: {status_line}
-เหตุผล/เงื่อนไขที่ติด:
-{blocked_text}
-════════════════════════════
+🔵 ELLIOTT-WAVE
+Engine: 1D
 """.strip()
 
-    footer = "\n\n────────────────────\n🔵 SYSTEM: ELLIOTT-WAVE\nEngine: 1D\n"
-    return text + footer
+    return text
