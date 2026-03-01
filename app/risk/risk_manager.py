@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # SL ต้องห่างจาก entry อย่างน้อยกี่ % ถึงจะ valid
 # ถ้าน้อยกว่านี้ = SL ใกล้เกินไป โดนง่ายมาก → reject
 MIN_SL_PCT = 1.0
-MAX_SL_PCT = 8.0
+MAX_SL_PCT = 10.0
 
 def calculate_rr(entry: float, sl: float, tp: float) -> float:
     risk = abs(entry - sl)

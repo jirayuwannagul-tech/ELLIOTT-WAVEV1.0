@@ -563,11 +563,15 @@ def build_scenarios(
         reasons.extend(warnings)
 
     # ── Step 6: คำนวณ swing_high / swing_low ให้ถูกทิศ ──
+    highs_all = [p for p in pivots if p["type"] == "H"]
+    lows_all  = [p for p in pivots if p["type"] == "L"]
+
     if direction == "SHORT":
         swing_high = (
             wave_pos.get("wave_4_high")
             or wave_pos.get("wave_2_high")
             or wave_pos.get("wave_1_start")
+            or (highs_all[-1]["price"] if highs_all else None)  # fallback: last H pivot
         )
         swing_low = (
             wave_pos.get("wave_3_end")
@@ -582,6 +586,7 @@ def build_scenarios(
             wave_pos.get("wave_4_low")
             or wave_pos.get("wave_2_low")
             or wave_pos.get("wave_1_start")
+            or (lows_all[-1]["price"] if lows_all else None)  # fallback: last L pivot
         )
 
     scenario = {
