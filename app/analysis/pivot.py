@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.config.wave_settings import FRACTAL_LEFT, FRACTAL_RIGHT
 
 import pandas as pd
 import numpy as np
@@ -22,8 +23,8 @@ def find_fractal_pivots(
     df: pd.DataFrame,
     atr_mult: float = 1.5,
     atr_length: int = 14,
-    left: int = 2,
-    right: int = 2,
+    left: int = FRACTAL_LEFT,
+    right: int = FRACTAL_RIGHT,
 ) -> List[Dict]:
     """
     ZigZag-based pivot detection กรองด้วย ATR

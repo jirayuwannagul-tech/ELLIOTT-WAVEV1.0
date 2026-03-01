@@ -11,7 +11,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.backtest.live_mirror_bt import run_symbol_bt
 
-SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']
+SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "DOTUSDT",
+]
 
 results = []
 errors  = []

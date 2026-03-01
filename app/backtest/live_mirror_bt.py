@@ -267,14 +267,13 @@ def run_symbol_bt(
         "trades": 0,
     }
 
-    in_trade = False
     skip_until = 0
     window_len = int(limit) if limit else BARS
 
     for i in range(250, len(df) - 2):
         dbg["bars"] += 1
 
-        if in_trade or i < skip_until:
+        if i < skip_until:
             continue
 
         start = max(0, (i + 1) - window_len)
