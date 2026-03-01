@@ -15,6 +15,7 @@ def test_find_fractal_pivots_basic():
         "low":   [1, 2, 3, 4, 5, 4, 3, 2, 1],
         "close": [1, 2, 3, 4, 5, 4, 3, 2, 1],
         "volume": [1]*9,
+        "atr14":  [0.5] * 9,
     }
 
     df = pd.DataFrame(data)

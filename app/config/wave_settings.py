@@ -7,8 +7,18 @@ TIMEZONE = ZoneInfo("Asia/Bangkok")
 RUN_HOUR = 7
 RUN_MINUTE = 5
 
-SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']
-
+SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "DOTUSDT",
+]
 MAX_RETRY = 3
 # --- Position sizing (fixed notional per trade) ---
 DEFAULT_NOTIONAL_USDT = 3.5
@@ -19,7 +29,7 @@ NOTIONAL_MAP = {
     "BTCUSDT": 70.0,
     "BNBUSDT": 6.5,
     "AVAXUSDT": 10.0,
-    "AAVEUSDT": 12.0,
+     "SOLUSDT": 8.0,
 }
 
 FRACTAL_LEFT = 2

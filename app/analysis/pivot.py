@@ -36,11 +36,12 @@ def find_fractal_pivots(
         "index": int,
         "price": float,
         "type": "H" or "L",
-        "degree": "minor" or "intermediate",
+        "degree": "minor" or "intermediate"
         "atr_at_pivot": float,
     }
     """
-    if df is None or len(df) < atr_length + right + left + 1:
+    # ✅ แบบใหม่
+    if df is None or len(df) < left + right + 1:
         return []
 
     atr_series = _calc_atr(df, length=atr_length)
