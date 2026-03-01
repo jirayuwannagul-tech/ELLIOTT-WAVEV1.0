@@ -28,6 +28,7 @@ import requests
 
 from app.scheduler.daily_wave_scheduler import run_daily_wave_job, run_trend_watch_job
 from app.config.wave_settings import TIMEFRAME
+from app.state.position_manager import save_armed_signal, get_active
 from app.trading.binance_trader import get_balance, get_open_positions
 from app.trading.trade_executor import execute_signal
 from app.state.position_manager import save_armed_signal
@@ -215,7 +216,12 @@ def dashboard():
             amt = p["positionAmt"]
             pnl = float(p["unRealizedProfit"])
             entry = p.get("entryPrice", "-")
-            pos_html += f"<div>{sym} | Amt: {amt} | Entry: {entry} | PNL: {pnl:.2f}</div>"
+            db_pos = get_active(sym, TIMEFRAME)
+            sl = f"{db_pos.sl:,.4f}" if db_pos else "-"
+            tp1 = f"{db_pos.tp1:,.4f}" if db_pos else "-"
+            tp2 = f"{db_pos.tp2:,.4f}" if db_pos else "-"
+            tp3 = f"{db_pos.tp3:,.4f}" if db_pos else "-"
+            pos_html += f"<div>{sym} | Amt: {amt} | Entry: {entry} | SL: {sl} | TP1: {tp1} | TP2: {tp2} | TP3: {tp3} | PNL: {pnl:.2f}</div>"
         if not pos_html:
             pos_html = "<div>NO ACTIVE POSITION</div>"
     except Exception as e:
