@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/scheduler/daily_wave_scheduler.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1.0, 65.0, 100.0, 999.0, 1000000000.0, 200, ', ', '-', '/', '0.30', '3.0', '5.0', '7.0', 'ENTRY_TRIGGER_PCT', 'EXEC_TOKEN', 'Engine: 1D', 'H', 'L', 'LONG', 'READY', 'SHORT', 'SL_PCT', 'TOPIC_NORMAL_ID', 'TP1_PCT', 'TP2_PCT', 'TP3_PCT', 'VPS_URL', 'X-EXEC-TOKEN', 'active', 'allowed_to_trade', 'confidence', 'daily_wave_job', 'direction', 'dist', 'dist_to_entry_pct', 'entry', 'fallback_wave_label', 'label', 'pivots', 'price', 'scenarios', 'sl', 'source', 'status', 'symbol', 'tp1', 'tp2', 'tp3', 'trade_plan', 'triggered', 'type', 'valid', 'wave_label', 'รายการที่พบ: ', '────────────────────', '📡 TREND WATCH (1D)']

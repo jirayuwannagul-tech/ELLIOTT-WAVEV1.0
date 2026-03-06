@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/trading/position_watcher.py
+# hypothesis_version: 6.151.9
+
+[0.0, '%Y-%m-%dT%H:%M:%SZ', '0.30', '0.40', '5', 'BUY', 'CLOSED', 'EXTERNAL_CLOSE', 'LONG', 'SELL', 'SHORT', 'SL', 'TP1_WEIGHT', 'TP2_WEIGHT', 'TP3', 'TP3_WEIGHT', 'WATCHER_ERROR:', 'WATCH_INTERVAL_SEC', 'direction', 'markPrice', 'meta', 'positionAmt', 'symbol', 'trade_plan', 'trigger_price']

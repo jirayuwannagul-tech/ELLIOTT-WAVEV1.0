@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/trading/binance_trader.py
+# hypothesis_version: 6.151.9
+
+[0.0, 400, 1000, '&', '.env', 'BINANCE_API_KEY', 'BINANCE_API_SECRET', 'BUY', 'CANCELED', 'CONDITIONAL', 'CONTRACT_PRICE', 'EXECUTED', 'FILLED', 'HEDGE', 'ISOLATED', 'LONG', 'LOT_SIZE', 'MARKET', 'No need to change', 'ONEWAY', 'PRICE_FILTER', 'SELL', 'SHORT', 'STOP_MARKET', 'TAKE_PROFIT_MARKET', 'USDT', 'X-MBX-APIKEY', 'algoType', 'asset', 'balance', 'closePosition', 'filterType', 'filters', 'leverage', 'limit', 'marginType', 'markPrice', 'minQty', 'orderId', 'orders', 'positionAmt', 'positionSide', 'quantity', 'reduceOnly', 'side', 'signature', 'status', 'stepSize', 'stopPrice', 'symbol', 'symbols', 'tickSize', 'timestamp', 'triggerPrice', 'true', 'type', 'updateTime', 'workingType']

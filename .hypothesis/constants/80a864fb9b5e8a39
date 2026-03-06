@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/analysis/multi_tf.py
+# hypothesis_version: 6.151.9
+
+[0.8, 200, 250, 300, 800, '1w', '4H len<250', '4H no close', '4H pivots not enough', '4h', 'BEAR', 'BULL', 'H', 'L', 'NEUTRAL', 'close', 'price', 'type', 'weekly len<250']

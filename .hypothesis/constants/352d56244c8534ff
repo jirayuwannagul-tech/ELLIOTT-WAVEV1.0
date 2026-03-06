@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/analysis/pivot.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1.5, 100, 'H', 'L', 'atr_at_pivot', 'close', 'degree', 'high', 'index', 'intermediate', 'low', 'minor', 'price', 'type']

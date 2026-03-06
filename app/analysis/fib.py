@@ -2,7 +2,7 @@ def fib_retracement(start: float, end: float, current: float):
     move = end - start
     if move == 0:
         return None
-    retrace = (current - end) / move
+    retrace = (end - current) / (end - start)
 
     # ถ้า retrace เกิน 1.0 = ราคากลับเกินจุดเริ่มต้น Wave1 → invalid
     if retrace > 1.0:

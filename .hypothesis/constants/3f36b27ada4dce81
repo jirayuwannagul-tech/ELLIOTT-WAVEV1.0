@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/analysis/market_regime.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.5, 1.0, 1.2, 2.8, 10.0, 20.0, 25.0, 45.0, 50.0, 55.0, 60.0, 80.0, 100.0, 250, 'BEAR', 'BULL', 'CHOP', 'HIGH', 'LOW', 'MID', 'NEUTRAL', 'RANGE', 'TREND', 'atr14', 'close', 'ema200', 'ema50', 'len<250', 'rsi14']

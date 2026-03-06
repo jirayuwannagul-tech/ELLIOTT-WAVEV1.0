@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/analysis/btc_cycle.py
+# hypothesis_version: 6.151.9
+
+[0.236, 0.382, 0.5, 0.618, 1.0, 1.618, 2.0, 2.5, 100, 500, '0.236', '0.382', '0.5', '0.618', '1', '1.0', '1.618', '1w', '2', '2.0', '3', '4', '5', '?', 'A', 'B', 'BEARISH', 'BTCUSDT', 'BULLISH', 'C', 'DOWN', 'H', 'L', 'NEUTRAL', 'Primary', 'UNKNOWN', 'UP', 'all_waves', 'bias', 'close', 'current_price', 'date', 'degree', 'direction', 'end', 'fib_targets', 'high', 'index', 'low', 'note', 'pct', 'pivot_count', 'price', 'retrace_pct', 'size', 'start', 'symbol', 'ts', 'type', 'wave', 'wave_high', 'wave_low', 'วิเคราะห์ไม่ได้']

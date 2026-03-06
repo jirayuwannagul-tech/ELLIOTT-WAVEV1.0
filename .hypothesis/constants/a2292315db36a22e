@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/services/telegram_reporter.py
+# hypothesis_version: 6.151.9
+
+[1.0, '-', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_TOPIC_ID', 'TG_SEND chat_id=', 'chat_id', 'direction', 'entry', 'level', 'message_thread_id', 'position_size_mult', 'resist', 'scenarios', 'sendMessage', 'sl', 'sr', 'support', 'symbol', 'text', 'thread=', 'tp1', 'tp2', 'tp3', 'trade_plan']

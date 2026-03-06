@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/trading/trade_executor.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.02, 0.1, 1.0, 1.618, 2.0, 70.0, 100, '.env', '0', '1', '178', 'BTCUSDT', 'BUY', 'DRY_BALANCE', 'DRY_RUN', 'ISOLATED', 'LONG', 'SELL', 'avgPrice', 'balance', 'balance_at_open', 'direction', 'entry', 'fills', 'orderId', 'price', 'qty', 'reason', 'risk', 'risk=0 (entry==sl)', 'rr', 'sl', 'symbol', 'tp1', 'tp2', 'tp3', 'trade_plan', 'true', 'valid', 'yes', '✅ SL set', '✅ TP set']

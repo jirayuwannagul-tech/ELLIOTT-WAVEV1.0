@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/analysis/macro_bias.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.35, 3.0, 5.0, 8.0, 25.0, 35.0, 45.0, 50.0, 55.0, 100.0, 'BEAR', 'BULL', 'CHOP', 'HIGH', 'LONG', 'MID', 'NEUTRAL', 'RANGE', 'SHORT', 'TREND', 'regime', 'trend', 'trend_strength', 'vol', 'vol_score']

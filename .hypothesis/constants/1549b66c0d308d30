@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/state/position_manager.py
+# hypothesis_version: 6.151.9
+
+[0.0, 'ACTIVE', 'ARMED', 'CLOSED', 'ELLIOTT_DB', 'LONG', 'SL', 'TP3', 'Z', 'closed', 'closed_at', 'closed_reason', 'created_at', 'data', 'direction', 'entry', 'meta', 'opened_at', 'positions.db', 'qty', 'remaining_qty', 'sl', 'sl_hit', 'status', 'symbol', 'timeframe', 'tp1', 'tp1_hit', 'tp2', 'tp2_hit', 'tp3', 'tp3_hit', 'trade_plan', 'trigger_price', 'type']

@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/indicators/atr.py
+# hypothesis_version: 6.151.9
+
+['close', 'high', 'low']

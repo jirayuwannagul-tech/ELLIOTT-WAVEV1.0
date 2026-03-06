@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/analysis/trend_detector.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.02, 0.5, 100, 'SIDEWAY', 'TREND', 'atr14', 'close', 'ema200', 'ema50']

@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/indicators/trend_filter.py
+# hypothesis_version: 6.151.9
+
+['BEAR', 'BULL', 'LONG', 'NEUTRAL', 'SHORT', 'close', 'ema200', 'ema50']

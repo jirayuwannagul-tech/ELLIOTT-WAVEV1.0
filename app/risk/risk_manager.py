@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import logging
 from typing import Dict, Optional
+from app.config.wave_settings import MIN_RR as _DEFAULT_MIN_RR
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ def _cap_tp3_by_max_r(entry: float, sl: float, tp3: float, direction: str) -> fl
 def build_trade_plan(
     scenario: Dict,
     current_price: float,
-    min_rr: float = 2.0,
+    min_rr: float = _DEFAULT_MIN_RR,
     sr: Optional[Dict] = None,
 ) -> Dict:
     stype = (scenario.get("type") or "").upper()

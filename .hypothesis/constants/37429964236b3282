@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/analysis/context_gate.py
+# hypothesis_version: 6.151.9
+
+[0.3, 0.7, 60.0, 'LONG', 'NEUTRAL', 'SHORT', 'allow_long', 'allow_short', 'allowed', 'bias', 'confidence', 'context_score', 'direction', 'gate_reason', 'score', 'strength']

@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/analysis/wave_rules.py
+# hypothesis_version: 6.151.9
+
+[0.382, 0.618, 0.8, 1.0, 1.618, 'DOWN', 'H', 'L', 'LONG', 'SHORT', 'UP', 'price', 'type']

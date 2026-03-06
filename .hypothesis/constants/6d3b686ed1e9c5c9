@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/data/binance_fetcher.py
+# hypothesis_version: 6.151.9
+
+[1000, '1d', 'UTC', 'close', 'close_time', 'connection error', 'high', 'ignore', 'interval', 'limit', 'low', 'ms', 'num_trades', 'open', 'open_time', 'qav', 'symbol', 'taker_base_vol', 'taker_quote_vol', 'timeout', 'volume']

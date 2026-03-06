@@ -10,10 +10,11 @@ from app.config.wave_settings import (
     TIMEZONE,
     MAX_RETRY,
     TIMEFRAME,
+    MIN_CONFIDENCE_LIVE,
 )
 from app.analysis.wave_engine import analyze_symbol
 from app.services.telegram_reporter import format_symbol_report, send_message
-
+from app.state.position_manager import get_active, get_armed_signal, save_armed_signal
 
 def _check_position_from_vps(symbol: str) -> bool:
     """ถาม VPS ว่ามี position เปิดอยู่ไหม"""
@@ -136,6 +137,16 @@ def run_daily_wave_job():
                     print(f"[{symbol}] no analysis -> skip", flush=True)
                     break
 
+                db_active = get_active(symbol, TIMEFRAME)
+                if db_active:
+                    print(f"[{symbol}] DB มี ACTIVE อยู่แล้ว ข้ามไป", flush=True)
+                    break
+
+                db_armed = get_armed_signal(symbol, TIMEFRAME)
+                if db_armed:
+                    print(f"[{symbol}] DB มี ARMED อยู่แล้ว ข้ามไป", flush=True)
+                    break
+
                 active = _check_position_from_vps(symbol)
                 if active:
                     print(f"[{symbol}] มี position อยู่ที่ VPS แล้ว ข้ามไป", flush=True)
@@ -145,11 +156,6 @@ def run_daily_wave_job():
                 sent = False
 
                 if not scenarios:
-                    wl = (analysis.get("wave_label", {}) or {}).get("label", {}) or {}
-                    print(
-                        f"[{symbol}] scenarios=0 | wave={wl.get('pattern')} {wl.get('direction')} conf={wl.get('confidence')}",
-                        flush=True
-                    )
                     break
 
                 for sc in scenarios:
@@ -164,6 +170,31 @@ def run_daily_wave_job():
                         continue
                     if not (allowed and triggered and valid):
                         continue
+
+                    direction = (sc.get("direction") or "").upper()
+                    entry = float(trade.get("entry") or 0.0)
+                    sl = float(trade.get("sl") or 0.0)
+                    tp1 = float(trade.get("tp1") or 0.0)
+                    tp2 = float(trade.get("tp2") or 0.0)
+                    tp3 = float(trade.get("tp3") or 0.0)
+
+                    save_armed_signal(
+                        symbol=symbol,
+                        timeframe=TIMEFRAME,
+                        direction=direction,
+                        trigger_price=entry,
+                        trade_plan={
+                            "entry": entry,
+                            "sl": sl,
+                            "tp1": tp1,
+                            "tp2": tp2,
+                            "tp3": tp3,
+                        },
+                        meta={
+                            "confidence": float(sc.get("confidence") or 0.0),
+                            "source": "daily_wave_job",
+                        },
+                    )
 
                     text = format_symbol_report(analysis)
                     send_message(text)
@@ -229,7 +260,14 @@ def run_trend_watch_job(min_conf: float = 65.0):
 
                 scenarios = analysis.get("scenarios", []) or []
                 if not scenarios:
-                    scenarios = _fallback_scenarios(analysis)
+                    fb = _fallback_scenarios(analysis)
+                    scenarios = [
+                        s for s in fb
+                        if float(s.get("confidence") or 0) >= MIN_CONFIDENCE_LIVE
+                    ]
+
+                if not scenarios:
+                    break
 
                 sc = scenarios[0]
                 conf = float(sc.get("confidence") or 0)

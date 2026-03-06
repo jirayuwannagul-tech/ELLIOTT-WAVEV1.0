@@ -1,0 +1,4 @@
+# file: /Users/jirayu_wannagulhotmail.com/Desktop/elliott-wave-system/app/risk/risk_manager.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1e-09, 0.01, 0.3, 0.382, 0.5, 0.618, 1.0, 1.6, 1.618, 2.0, 10.0, 100.0, 100, '1.0', '1.618', '2.0', 'ABC: pivots ไม่พอ', 'ABC_DOWN', 'ABC_UP', 'LONG', 'MAX_TP_R', 'SHORT', 'SIDEWAY_RANGE', 'actual_entry', 'atr', 'direction', 'entry', 'entry <= 0', 'level', 'pivots', 'price', 'range_high', 'range_low', 'reason', 'resist', 'risk', 'risk=0 (entry==sl)', 'rr', 'sl', 'support', 'swing_high', 'swing_low', 'tp1', 'tp2', 'tp3', 'type', 'valid']
