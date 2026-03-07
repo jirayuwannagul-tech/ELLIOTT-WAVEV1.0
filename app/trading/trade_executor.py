@@ -27,6 +27,8 @@ MIN_NOTIONAL_USDT = 20.0
 
 FIXED_NOTIONAL_USDT = {
     "BTCUSDT": 70.0,
+    "XRPUSDT": 25.0,
+    "LINKUSDT": 25.0,
 }
 
 def _get_actual_entry(order: dict, entry_est: float) -> float:
