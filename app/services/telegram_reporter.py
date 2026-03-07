@@ -46,6 +46,9 @@ def _fmt_price(x: float) -> str:
 
 
 def format_symbol_report(analysis: dict) -> str:
+    from datetime import datetime
+    import pytz
+
     symbol = analysis.get("symbol", "-")
     size_mult = analysis.get("position_size_mult", 1.0)
 
@@ -68,6 +71,8 @@ def format_symbol_report(analysis: dict) -> str:
 
     direction = sc.get("direction") or "-"
 
+    now = datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%Y-%m-%d %H:%M")
+
     text = f"""
 ═══════════════════
 👑 {symbol} (1D)
@@ -87,7 +92,7 @@ TP3: {_fmt_price(tp3) if tp3 else '-'}
 แนวรับ: {_fmt_price(support) if support else '-'}
 แนวต้าน: {_fmt_price(resist) if resist else '-'}
 ═══════════════════
-
+📅 {now}
 🔵 ELLIOTT-WAVE
 Engine: 1D
 """.strip()
