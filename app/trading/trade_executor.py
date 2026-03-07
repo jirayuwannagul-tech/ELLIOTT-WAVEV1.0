@@ -23,8 +23,7 @@ from app.state.position_manager import lock_new_position, get_active
 from app.config.wave_settings import TIMEFRAME
 
 RISK_PCT = 0.02
-MIN_RR_AFTER_FILL = 2.0
-MIN_NOTIONAL_USDT = 20.0  # ✅ เพิ่ม
+MIN_NOTIONAL_USDT = 20.0
 
 FIXED_NOTIONAL_USDT = {
     "BTCUSDT": 70.0,
@@ -49,12 +48,12 @@ def _recalculate_plan(direction: str, actual_entry: float, sl: float, tp_rr: flo
         return {"valid": False, "reason": "risk=0 (entry==sl)"}
     if direction == "LONG":
         tp1 = actual_entry + risk * 1.0
-        tp2 = actual_entry + risk * 1.618
-        tp3 = actual_entry + risk * 2.0
+        tp2 = actual_entry + risk * tp_rr
+        tp3 = actual_entry + risk * (tp_rr + 0.382)
     else:
         tp1 = actual_entry - risk * 1.0
-        tp2 = actual_entry - risk * 1.618
-        tp3 = actual_entry - risk * 2.0
+        tp2 = actual_entry - risk * tp_rr
+        tp3 = actual_entry - risk * (tp_rr + 0.382)
     actual_rr = abs(tp2 - actual_entry) / risk
     return {
         "valid": True,
@@ -127,15 +126,7 @@ def execute_signal(signal: dict) -> bool:
         return False
     quantity = adj_qty
 
-    # ✅ pre-check RR ก่อนเปิดออเดอร์
-    _risk_est = abs(entry_est - sl_orig)
-    if _risk_est > 0:
-        _rr_est = abs(tp2_orig - entry_est) / _risk_est
-        if _rr_est < MIN_RR_AFTER_FILL:
-            print(f"❌ [{symbol}] RR ต่ำเกิน (pre-check) rr={_rr_est:.2f} < {MIN_RR_AFTER_FILL} → skip", flush=True)
-            return False
-
-    # ✅ pre-check minimum notional $20
+    # ── pre-check minimum notional $20 (Binance requirement) ──
     _notional_est = quantity * entry_est
     if _notional_est < MIN_NOTIONAL_USDT:
         print(f"❌ [{symbol}] notional ต่ำเกิน ${_notional_est:.2f} < ${MIN_NOTIONAL_USDT} → skip", flush=True)
@@ -165,11 +156,6 @@ def execute_signal(signal: dict) -> bool:
 
     if not plan["valid"]:
         print(f"❌ [{symbol}] plan invalid → emergency close")
-        _emergency_close(symbol, direction, quantity)
-        return False
-
-    if plan["rr"] < MIN_RR_AFTER_FILL:
-        print(f"❌ [{symbol}] RR ต่ำเกินหลัง fill → emergency close")
         _emergency_close(symbol, direction, quantity)
         return False
 
