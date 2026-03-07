@@ -242,9 +242,9 @@ def run_daily_wave_job():
     print("=== END DAILY WAVE JOB ===", flush=True)
 
 def run_trend_watch_job(min_conf: float = 65.0):
-    """
-    Trend Watch: แจ้งเหรียญที่ confidence >= min_conf
-    """
+    from datetime import datetime
+    import pytz
+
     print(f"=== START TREND WATCH | tf={TIMEFRAME} | min_conf={min_conf} ===", flush=True)
 
     picks = []
@@ -259,13 +259,6 @@ def run_trend_watch_job(min_conf: float = 65.0):
                     break
 
                 scenarios = analysis.get("scenarios", []) or []
-                if not scenarios:
-                    fb = _fallback_scenarios(analysis)
-                    scenarios = [
-                        s for s in fb
-                        if float(s.get("confidence") or 0) >= MIN_CONFIDENCE_LIVE
-                    ]
-
                 if not scenarios:
                     break
 
@@ -305,6 +298,8 @@ def run_trend_watch_job(min_conf: float = 65.0):
 
     picks.sort(key=lambda x: (-x["confidence"], x["dist"] if x["dist"] is not None else 1e9))
 
+    now = datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%Y-%m-%d %H:%M")
+
     lines = []
     lines.append("📡 TREND WATCH (1D)")
     lines.append(f"เกณฑ์: Conf >= {int(min_conf)} | จำนวนที่น่าจับตา: {len(picks)}")
@@ -337,12 +332,12 @@ def run_trend_watch_job(min_conf: float = 65.0):
 
     lines.append("")
     lines.append("────────────────────")
+    lines.append(f"📅 {now}")
     lines.append("🔵 SYSTEM: ELLIOTT-WAVE")
     lines.append("Engine: 1D")
 
     send_message("\n".join(lines), topic_id=os.getenv("TOPIC_NORMAL_ID"))
     print("=== END TREND WATCH ===", flush=True)
-
 
 def start_scheduler_loop():
     """
